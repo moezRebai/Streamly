@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Core", "Streamly.Core\Streamly.Core.csproj", "{1CB9B979-E9C0-48F3-8402-2B087D2482F6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Infrastructure", "Streamly.Infrastructure\Streamly.Infrastructure.csproj", "{D47E2B70-77F5-4FEF-926B-AAB2DA067B76}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Core.Runtime", "Streamly.Core.Runtime\Streamly.Core.Runtime.csproj", "{42C41E32-5C56-4609-AA00-F722D6C34834}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Subscriber", "Streamly.Subscriber\Streamly.Subscriber.csproj", "{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1CB9B979-E9C0-48F3-8402-2B087D2482F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1CB9B979-E9C0-48F3-8402-2B087D2482F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1CB9B979-E9C0-48F3-8402-2B087D2482F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1CB9B979-E9C0-48F3-8402-2B087D2482F6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D47E2B70-77F5-4FEF-926B-AAB2DA067B76}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D47E2B70-77F5-4FEF-926B-AAB2DA067B76}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D47E2B70-77F5-4FEF-926B-AAB2DA067B76}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D47E2B70-77F5-4FEF-926B-AAB2DA067B76}.Release|Any CPU.Build.0 = Release|Any CPU
+		{42C41E32-5C56-4609-AA00-F722D6C34834}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{42C41E32-5C56-4609-AA00-F722D6C34834}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{42C41E32-5C56-4609-AA00-F722D6C34834}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{42C41E32-5C56-4609-AA00-F722D6C34834}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
