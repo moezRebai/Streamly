@@ -4,7 +4,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Runtime.Channel;
-using Streamly.Core.Runtime.Registration;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Infrastructure.Redis;
 using Streamly.Subscriber.Configuration;
@@ -12,37 +11,8 @@ using Streamly.Subscriber.Internal;
 
 namespace Streamly.Subscriber;
 
-/// <summary>
-/// Extension methods for registering subscriber services
-///
-/// Usage (client application):
-///   services.AddStreamlySubscriber(configuration, options =>
-///   {
-///       options.AddSubscriber{SpotRequest, SpotPrice}("SpotPricer");
-///       options.AddSubscriber{FxSwapRequest, FxSwapPrice}("FxSwapPricer");
-///   });
-///
-///   // Then in user code:
-///   public class TradingApp
-///   {
-///       private readonly IStreamingSubscriber{SpotRequest, SpotPrice} _subscriber;
-///
-///       public void Start()
-///       {
-///           var stream = _subscriber.Stream(
-///               new SpotRequest { CurrencyPair = "EUR/USD" },
-///               StreamBehavior.Live);
-///
-///           stream.Subscribe(onNext: price => Console.WriteLine(price.Rate));
-///       }
-///   }
-/// </summary>
 public static class SubscriberServiceCollectionExtensions
 {
-    /// <summary>
-    /// Register Streamly subscriber services
-    /// Call once in Program.cs or Startup.cs
-    /// </summary>
     public static IServiceCollection AddStreamlySubscriber(
         this IServiceCollection services,
         IConfiguration configuration,
@@ -51,22 +21,22 @@ public static class SubscriberServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(configure);
 
-        // 1. Bind subscriber configuration
+        // 1. Bind configuration
         services.Configure<SubscriberOptions>(
             configuration.GetSection(SubscriberOptions.SectionName));
 
-        // 2. Register Redis infrastructure using correct overload
-        //    TryAdd inside AddRedisInfrastructure = safe to call multiple times
-        //    Redis connection string comes from IConfiguration binding
-        services.AddRedisInfrastructure(options =>
-            configuration
-                .GetSection(RedisConnectionOptions.SectionName)
-                .Bind(options));                            // ← Bind from IConfiguration
+        // 2. Register Infrastructure (safe to call multiple times via TryAdd)
+        services.TryAddSingleton<IMessageSerializer, MessageSerializer>();
+        services.TryAddSingleton<IRedisConnectionManager, RedisConnectionManager>();
 
-        // 3. Register channel resolver
+        services.Configure<RedisConnectionOptions>(
+            configuration.GetSection(RedisConnectionOptions.SectionName));
+
+        // 3. Register ChannelNameResolver - subscriber needs it to build channel names
+        //    No IStreamRegistry needed - streamName passed directly at registration
         services.TryAddSingleton<IChannelNameResolver, ChannelNameResolver>();
 
-        // 4. Apply subscriber registrations
+        // 4. Apply per-stream subscriber registrations
         var registrationOptions = new SubscriberRegistrationOptions(services);
         configure(registrationOptions);
 
@@ -74,9 +44,6 @@ public static class SubscriberServiceCollectionExtensions
     }
 }
 
-/// <summary>
-/// Fluent registration options for subscriber streams
-/// </summary>
 public class SubscriberRegistrationOptions
 {
     private readonly IServiceCollection _services;
@@ -87,37 +54,47 @@ public class SubscriberRegistrationOptions
     }
 
     /// <summary>
-    /// Register a subscriber for a specific stream type
-    ///
-    /// Usage:
-    ///   options.AddSubscriber{SpotRequest, SpotPrice}("SpotPricer");
+    /// Register a subscriber for a stream type.
+    /// streamName must match what the publisher registered (e.g., "SpotPricer")
     /// </summary>
-    // In SubscriberServiceCollectionExtensions.cs
     public SubscriberRegistrationOptions AddSubscriber<TRequest, TResponse>(string streamName)
     {
-        _services.TryAddSingleton<IStreamingSubscriber<TRequest, TResponse>>(sp =>
+        if (string.IsNullOrWhiteSpace(streamName))
+            throw new ArgumentException("Stream name cannot be null or whitespace", nameof(streamName));
+
+        // Register SubscriptionManager (singleton per TRequest/TResponse)
+        // streamName captured in closure - no IStreamRegistry needed
+        _services.TryAddSingleton<SubscriptionManager<TRequest, TResponse>>(sp =>
         {
-            // Wire everything internally - DI extension has access to internals
             var redis = sp.GetRequiredService<IRedisConnectionManager>();
             var serializer = sp.GetRequiredService<IMessageSerializer>();
             var channelResolver = sp.GetRequiredService<IChannelNameResolver>();
-            var streamRegistry = sp.GetRequiredService<IStreamRegistry>();
             var options = sp.GetRequiredService<IOptions<SubscriberOptions>>();
-            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var logger = sp.GetRequiredService<ILogger<SubscriptionManager<TRequest, TResponse>>>();
 
-            // Create SubscriptionManager (internal)
-            var manager = new SubscriptionManager<TRequest, TResponse>(
-                streamName,
+            return new SubscriptionManager<TRequest, TResponse>(
+                streamName,       // ← passed directly, no registry lookup
                 redis,
                 serializer,
                 channelResolver,
                 options,
-                loggerFactory.CreateLogger<SubscriptionManager<TRequest, TResponse>>());
+                logger);
+        });
 
-            // Create StreamingSubscriber (internal) behind public interface
+        // Register StreamingSubscriber behind public interface (singleton per TRequest/TResponse)
+        // All deps are resolved from DI except streamName (captured in closure)
+        _services.TryAddSingleton<IStreamingSubscriber<TRequest, TResponse>>(sp =>
+        {
+            var manager = sp.GetRequiredService<SubscriptionManager<TRequest, TResponse>>();
+            var redis = sp.GetRequiredService<IRedisConnectionManager>();
+            var serializer = sp.GetRequiredService<IMessageSerializer>();
+            var channelResolver = sp.GetRequiredService<IChannelNameResolver>();
+            var options = sp.GetRequiredService<IOptions<SubscriberOptions>>();
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+
             return new StreamingSubscriber<TRequest, TResponse>(
+                streamName,       // ← passed directly, no registry lookup
                 manager,
-                streamRegistry,
                 redis,
                 serializer,
                 channelResolver,
@@ -128,8 +105,3 @@ public class SubscriberRegistrationOptions
         return this;
     }
 }
-
-/// <summary>
-/// Stream registration info for subscriber side
-/// </summary>
-internal record SubscriberStreamRegistration(Type RequestType, string StreamName);

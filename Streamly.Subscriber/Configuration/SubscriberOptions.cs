@@ -3,7 +3,7 @@ namespace Streamly.Subscriber.Configuration;
 /// <summary>
 /// Configuration for the subscriber side
 /// </summary>
-public abstract class SubscriberOptions
+public class SubscriberOptions
 {
     public const string SectionName = "Streamly:Subscriber";
 
@@ -45,4 +45,23 @@ public abstract class SubscriberOptions
     /// Default: 30 seconds
     /// </summary>
     public TimeSpan ReconnectMaxDelay { get; set; } = TimeSpan.FromSeconds(30);
+    
+    
+    /// <summary>
+    /// How long to wait without a response before considering publisher dead.
+    /// For trading: 500ms. General use: 2000ms.
+    /// Default: 2000ms
+    /// </summary>
+    public TimeSpan HeartbeatTimeout { get; set; } = TimeSpan.FromMilliseconds(2000);
+}
+
+
+/// <summary>
+/// Thrown by the watchdog when no responses received within HeartbeatTimeout.
+/// Caught by Polly in StreamingSubscriber to trigger reconnection.
+/// </summary>
+public class PublisherUnavailableException : Exception
+{
+    public PublisherUnavailableException(string message) : base(message) { }
+    public PublisherUnavailableException(string message, Exception inner) : base(message, inner) { }
 }

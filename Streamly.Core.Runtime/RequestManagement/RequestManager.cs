@@ -53,7 +53,8 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         IChannelNameResolver channelResolver,
         IOptions<StateSyncOptions> stateSyncOptions,
         IStreamingContextFactory<TRequest, TResponse> contextFactory,
-        ILoggerFactory loggerFactory, ConfirmationPublisher confirmationPublisher)
+        IConfirmationPublisherFactory confirmationPublisherFactory,
+        ILoggerFactory loggerFactory)
     {
         _streamName = streamRegistry.GetStreamName<TRequest>();
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -66,7 +67,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         _logger = loggerFactory.CreateLogger<RequestManager<TRequest, TResponse>>();
 
         _contextFactory = contextFactory ?? throw new ArgumentNullException(nameof(contextFactory));
-        _confirmationPublisher = confirmationPublisher ?? throw new ArgumentNullException(nameof(confirmationPublisher));
+        _confirmationPublisher = confirmationPublisherFactory.Create(_streamName);
 
         // Get leader election service for this stream
         _leaderElection = leaderElectionFactory.GetOrCreate(_streamName);
@@ -182,7 +183,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
 
     #region Request Opening
 
-    public async Task<string> OpenRequestAsync(
+    public Task<string> OpenRequestAsync(
         RequestEnvelope<TRequest> envelope,
         CancellationToken cancellationToken = default)
     {
@@ -215,7 +216,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
                     metadata.LastUpdateAt = DateTime.UtcNow;
                 });
 
-                return requestId;
+                return Task.FromResult(requestId);
             }
 
             // Create new metadata
@@ -243,15 +244,15 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
                     _streamName,
                     _registry.Count);
 
-                // Invoke handler
-                await InvokeHandlerOpenedAsync(
+                _registry.TryUpdate(requestId, m => m.State = RequestState.Streaming);
+
+                // Invoke handler (runs indefinitely for Live streams)
+                // Fire-and-forget: don't await - handler runs in background
+                _ = InvokeHandlerOpenedAsync(
                     envelope.Request,
                     requestId,
-                    envelope.Behavior, // ← Pass behavior
+                    envelope.Behavior,
                     cancellationToken);
-
-                // Update state to Streaming
-                _registry.TryUpdate(requestId, m => m.State = RequestState.Streaming);
             }
             else
             {
@@ -259,7 +260,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
                 _registry.TryUpdate(requestId, m => m.SubscriberCount++);
             }
 
-            return requestId;
+            return Task.FromResult(requestId);
         }
         catch (Exception ex)
         {

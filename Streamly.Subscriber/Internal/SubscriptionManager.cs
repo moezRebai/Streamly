@@ -1,3 +1,11 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// FILE: Streamly.Subscriber/Internal/SubscriptionManager.cs
+// CHANGES:
+//   1. Added _lastResponseTime + watchdog loop
+//   2. Watchdog notifies via state.OnReconnecting() instead of OnError
+//   3. Added StartWatchdogAsync / StopWatchdogAsync
+// ─────────────────────────────────────────────────────────────────────────────
+
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -5,22 +13,10 @@ using Streamly.Core.Models;
 using Streamly.Core.Runtime.Channel;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Subscriber.Configuration;
+using Streamly.Subscriber.Models;
 
 namespace Streamly.Subscriber.Internal;
 
-/// <summary>
-/// Core of the subscriber side
-///
-/// Responsibilities:
-/// 1. Maintain ONE Redis subscription per stream type (efficient)
-/// 2. Route incoming responses to correct observer by RequestId
-/// 3. Handle confirmation handshake (CorrelationId → RequestId)
-/// 4. Manage subscription lifecycle (add, remove, auto-close)
-/// 5. Parallel dispatch via worker pool (handles 10,000 simultaneous updates)
-/// 6. Epoch validation (reject stale messages)
-///
-/// ONE instance per stream type (TRequest/TResponse pair)
-/// </summary>
 internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
 {
     private readonly IRedisConnectionManager _redis;
@@ -33,20 +29,19 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
     private readonly string _responsesChannel;
     private readonly string _confirmChannel;
 
-    // RequestId → SubscriptionState (multiple observers per RequestId possible)
     private readonly ConcurrentDictionary<string, List<SubscriptionState<TResponse>>> _byRequestId = new();
-
-    // CorrelationId → SubscriptionState (during handshake, before RequestId known)
     private readonly ConcurrentDictionary<string, SubscriptionState<TResponse>> _byCorrelationId = new();
 
-    // Worker pool for parallel dispatch
     private DispatchWorkerPool<TResponse>? _workerPool;
-
-    // Track if we have active Redis subscriptions
     private int _activeSubscriptionCount;
     private bool _redisSubscribed;
     private readonly SemaphoreSlim _subscriptionLock = new(1, 1);
     private bool _disposed;
+
+    // ── Watchdog ─────────────────────────────────────────────────────────────
+    private DateTime _lastResponseTime = DateTime.UtcNow;
+    private CancellationTokenSource? _watchdogCts;
+    private Task? _watchdogTask;
 
     public SubscriptionManager(
         string streamName,
@@ -60,38 +55,30 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         _redis = redis ?? throw new ArgumentNullException(nameof(redis));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
-        _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        _options = options.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         _responsesChannel = _channelResolver.GetResponsesChannel(_streamName);
         _confirmChannel = _channelResolver.GetConfirmChannel(_streamName);
     }
 
-    /// <summary>
-    /// Register a new subscription
-    /// Called before publishing RequestEnvelope to Redis
-    /// Returns CorrelationId to use in the envelope
-    /// </summary>
-    public async Task RegisterPendingAsync(SubscriptionState<TResponse> state,
+    public async Task RegisterPendingAsync(
+        SubscriptionState<TResponse> state,
         CancellationToken cancellationToken)
     {
         await EnsureRedisSubscribedAsync(cancellationToken);
 
-        // Register by CorrelationId (pending confirmation)
         _byCorrelationId[state.CorrelationId] = state;
-
         Interlocked.Increment(ref _activeSubscriptionCount);
 
+        // Start watchdog on first registration
+        StartWatchdog();
+
         _logger.LogDebug(
-            "Registered pending subscription with correlationId '{CorrelationId}' for stream '{StreamName}'",
-            state.CorrelationId,
-            _streamName);
+            "Registered pending subscription '{CorrelationId}' for stream '{StreamName}'",
+            state.CorrelationId, _streamName);
     }
 
-    /// <summary>
-    /// Called when client disposes subscription
-    /// Removes observer, sends unsubscribe if last observer for RequestId
-    /// </summary>
     public async Task UnregisterAsync(
         SubscriptionState<TResponse> state,
         CancellationToken cancellationToken = default)
@@ -99,24 +86,14 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         if (state.IsDisposed) return;
         state.IsDisposed = true;
 
-        _logger.LogDebug(
-            "Unregistering subscription for RequestId '{RequestId}'",
-            state.RequestId ?? state.CorrelationId);
-
-        // Remove from pending if still waiting for confirmation
         if (state.WaitingForConfirmation)
-        {
             _byCorrelationId.TryRemove(state.CorrelationId, out _);
-        }
 
-        // Remove from active subscriptions
         if (state.RequestId != null)
         {
             RemoveFromRequestIdDict(state);
 
-            // If no more observers for this RequestId, send unsubscribe signal
-            if (!_byRequestId.ContainsKey(state.RequestId) ||
-                _byRequestId[state.RequestId].Count == 0)
+            if (!_byRequestId.TryGetValue(state.RequestId, out var value) || value.Count == 0)
             {
                 await SendUnsubscribeAsync(state.RequestId, cancellationToken);
             }
@@ -124,19 +101,132 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
 
         Interlocked.Decrement(ref _activeSubscriptionCount);
 
-        // If no more active subscriptions, unsubscribe from Redis
         if (_activeSubscriptionCount <= 0)
         {
+            StopWatchdog();
             await UnsubscribeFromRedisAsync();
         }
     }
 
-    #region Redis Message Handlers
+    #region Watchdog
+
+    private void StartWatchdog()
+    {
+        if (_watchdogTask is { IsCompleted: false })
+            return; // already running
+
+        _lastResponseTime = DateTime.UtcNow; // reset on each new subscription
+        _watchdogCts = new CancellationTokenSource();
+        _watchdogTask = RunWatchdogAsync(_watchdogCts.Token);
+
+        _logger.LogDebug(
+            "Watchdog started for stream '{StreamName}' (timeout: {Timeout}ms)",
+            _streamName, _options.HeartbeatTimeout.TotalMilliseconds);
+    }
+
+    private void StopWatchdog()
+    {
+        _watchdogCts?.Cancel();
+        _watchdogCts = null;
+    }
+
+    private async Task RunWatchdogAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(100, ct); // check every 100ms
+
+                if (_activeSubscriptionCount <= 0) continue;
+
+                var elapsed = DateTime.UtcNow - _lastResponseTime;
+                if (elapsed <= _options.HeartbeatTimeout) continue;
+
+                _logger.LogWarning(
+                    "Heartbeat timeout on '{StreamName}': no response for {Elapsed}ms " +
+                    "(threshold: {Threshold}ms). Notifying subscribers.",
+                    _streamName,
+                    (int)elapsed.TotalMilliseconds,
+                    (int)_options.HeartbeatTimeout.TotalMilliseconds);
+
+                // Notify all active subscribers - does NOT kill their observable
+                NotifyReconnecting();
+
+                // Reset timer to avoid spamming
+                _lastResponseTime = DateTime.UtcNow;
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Watchdog error for stream '{StreamName}'", _streamName);
+            }
+        }
+    }
 
     /// <summary>
-    /// Called when leader sends confirmation
-    /// Moves subscription from CorrelationId dict to RequestId dict
+    /// Notifies all active states that stream is lost.
+    /// Does NOT call OnError/OnCompleted - observable stays alive.
+    /// Polly in StreamingSubscriber will retry and call OnStreamRestored when back.
     /// </summary>
+    private void NotifyReconnecting()
+    {
+        var activeStates = _byRequestId.Values
+            .SelectMany(list => { lock (list) return list.ToList(); })
+            .Concat(_byCorrelationId.Values)
+            .Distinct()
+            .ToList();
+
+        foreach (var state in activeStates)
+        {
+            if (state.IsDisposed) continue;
+
+            state.ReconnectAttempts++;
+
+            state.NotifyStatus(StreamStatus.Reconnecting(
+                _streamName,
+                state.ReconnectAttempts,
+                _options.MaxReconnectAttempts,
+                new PublisherUnavailableException(
+                    $"No response from '{_streamName}' for {(int)_options.HeartbeatTimeout.TotalMilliseconds}ms")));
+        }
+    }
+
+    /// <summary>
+    /// Called by StreamingSubscriber when reconnection succeeds.
+    /// Notifies all states that stream is back.
+    /// </summary>
+    public void NotifyRestored()
+    {
+        _lastResponseTime = DateTime.UtcNow;
+
+        var activeStates = _byRequestId.Values
+            .SelectMany(list => { lock (list) return list.ToList(); })
+            .ToList();
+
+        foreach (var state in activeStates)
+        {
+            if (state.IsDisposed) continue;
+
+            if (state.ReconnectAttempts > 0)
+            {
+                _logger.LogInformation(
+                    "Stream restored for RequestId '{RequestId}' on '{StreamName}'",
+                    state.RequestId, _streamName);
+
+                state.ReconnectAttempts = 0;
+                state.NotifyStatus(StreamStatus.Active(_streamName));
+            }
+        }
+    }
+
+    #endregion
+
+    #region Redis Message Handlers
+
     private Task OnConfirmationReceivedAsync(byte[] data)
     {
         try
@@ -146,29 +236,16 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             if (confirmation.StreamName != _streamName)
                 return Task.CompletedTask;
 
-            _logger.LogDebug(
-                "Received confirmation: correlationId '{CorrelationId}' → requestId '{RequestId}'",
-                confirmation.CorrelationId,
-                confirmation.RequestId);
-
-            // Find pending subscription by CorrelationId
             if (!_byCorrelationId.TryRemove(confirmation.CorrelationId, out var state))
-            {
-                _logger.LogDebug(
-                    "No pending subscription for correlationId '{CorrelationId}', ignoring",
-                    confirmation.CorrelationId);
                 return Task.CompletedTask;
-            }
 
-            // Promote: now we know the real RequestId
             state.RequestId = confirmation.RequestId;
             state.LastKnownEpoch = confirmation.Epoch;
             state.WaitingForConfirmation = false;
 
-            // Add to RequestId routing dict
             _byRequestId.AddOrUpdate(
                 confirmation.RequestId,
-                _ => new List<SubscriptionState<TResponse>> { state },
+                _ => [state],
                 (_, existing) =>
                 {
                     lock (existing) { existing.Add(state); }
@@ -176,108 +253,74 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
                 });
 
             _logger.LogInformation(
-                "Subscription confirmed for RequestId '{RequestId}' (stream '{StreamName}')",
-                confirmation.RequestId,
-                _streamName);
+                "Confirmed: correlationId '{CorrelationId}' → requestId '{RequestId}'",
+                confirmation.CorrelationId, confirmation.RequestId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Error processing confirmation for stream '{StreamName}'",
-                _streamName);
+            _logger.LogError(ex, "Error processing confirmation for '{StreamName}'", _streamName);
         }
 
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Called when a response arrives from Redis
-    /// Routes to worker pool for parallel processing
-    /// </summary>
     private Task OnResponseReceivedAsync(byte[] data)
     {
         try
         {
-            // Quick peek at RequestId only (avoid full deserialization here for speed)
-            // Full deserialization happens in worker
+            // ✅ Reset watchdog on every message received
+            _lastResponseTime = DateTime.UtcNow;
+
             var preview = _serializer.Deserialize<ResponsePreview>(data);
 
             if (!_byRequestId.ContainsKey(preview.RequestId))
-            {
-                // No subscriber for this RequestId, ignore
-                _logger.LogTrace(
-                    "No subscriber for RequestId '{RequestId}', ignoring",
-                    preview.RequestId);
                 return Task.CompletedTask;
-            }
 
-            // Dispatch to worker pool (non-blocking)
             _workerPool?.Dispatch(preview.RequestId, data, preview.Epoch);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Error routing response for stream '{StreamName}'",
-                _streamName);
+            _logger.LogError(ex, "Error routing response for '{StreamName}'", _streamName);
         }
 
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Called by worker pool to fully process a dispatched message
-    /// Full deserialization + epoch validation + observer dispatch
-    /// </summary>
     private async Task ProcessDispatchItemAsync(DispatchItem item)
     {
         try
         {
-            // Full deserialization in worker
             var message = _serializer.Deserialize<InternalResponseMessage<TResponse>>(item.Data);
 
-            // Get observers for this RequestId
             if (!_byRequestId.TryGetValue(message.RequestId, out var states))
                 return;
 
             List<SubscriptionState<TResponse>> snapshot;
-            lock (states) { snapshot = new List<SubscriptionState<TResponse>>(states); }
+            lock (states) { snapshot = [..states]; }
 
             foreach (var state in snapshot)
             {
                 if (state.IsDisposed) continue;
 
-                // Validate epoch (reject stale messages)
                 if (message.Epoch < state.LastKnownEpoch)
                 {
                     _logger.LogWarning(
-                        "Rejecting stale message for RequestId '{RequestId}' (epoch {MsgEpoch} < {KnownEpoch})",
-                        message.RequestId,
-                        message.Epoch,
-                        state.LastKnownEpoch);
+                        "Rejecting stale message for '{RequestId}' (epoch {Msg} < {Known})",
+                        message.RequestId, message.Epoch, state.LastKnownEpoch);
                     continue;
                 }
 
                 state.LastKnownEpoch = message.Epoch;
-
-                // Deliver response to observer (epoch stripped - user never sees it)
                 state.Subject.OnNext(message.Data);
 
-                _logger.LogTrace(
-                    "Dispatched response for RequestId '{RequestId}' to observer",
-                    message.RequestId);
-
-                // Handle stream closure
                 if (message.IsFinal)
-                {
                     await HandleFinalMessageAsync(state, message.CloseReason ?? CloseReason.Normal);
-                }
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Error processing dispatch item for RequestId '{RequestId}'",
-                item.RequestId);
+                "Error processing dispatch item for RequestId '{RequestId}'", item.RequestId);
         }
     }
 
@@ -285,38 +328,24 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         SubscriptionState<TResponse> state,
         CloseReason reason)
     {
-        _logger.LogInformation(
-            "Stream closing for RequestId '{RequestId}', reason: {Reason}",
-            state.RequestId,
-            reason);
+        var shouldReconnect = reason is
+            CloseReason.Error or
+            CloseReason.Timeout or
+            CloseReason.Orphaned or
+            CloseReason.Shutdown;
 
-        // Determine if should reconnect based on reason
-        var shouldReconnect = reason switch
+        if (shouldReconnect)
         {
-            CloseReason.Normal => false,
-            CloseReason.Unsubscribe => false,
-            CloseReason.Error => true,
-            CloseReason.Timeout => true,
-            CloseReason.Orphaned => true,
-            CloseReason.Shutdown => true,
-            _ => false
-        };
-
-        if (shouldReconnect && state.ReconnectAttempts < _options.MaxReconnectAttempts)
-        {
-            _logger.LogInformation(
-                "Reconnecting subscription for RequestId '{RequestId}' (attempt {Attempt}/{Max})",
-                state.RequestId,
-                state.ReconnectAttempts + 1,
-                _options.MaxReconnectAttempts);
-
-            // TODO: Trigger Polly reconnect (will implement in StreamingSubscriber)
-            // For now signal the subscriber to handle reconnect
-            state.ReconnectAttempts++;
+            // Signal reconnect needed - StreamingSubscriber handles it via Polly
+            state.NotifyStatus(StreamStatus.Reconnecting(
+                _streamName,
+                ++state.ReconnectAttempts,
+                _options.MaxReconnectAttempts,
+                new PublisherUnavailableException($"Stream closed: {reason}")));
         }
         else
         {
-            // Complete the observable (no reconnect)
+            // Normal/Unsubscribe - complete observable cleanly
             state.Subject.OnCompleted();
             await UnregisterAsync(state);
         }
@@ -335,17 +364,9 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         {
             if (_redisSubscribed) return;
 
-            _logger.LogInformation(
-                "Creating Redis subscriptions for stream '{StreamName}'",
-                _streamName);
+            await _redis.SubscribeAsync(_confirmChannel, OnConfirmationReceivedAsync, cancellationToken);
+            await _redis.SubscribeAsync(_responsesChannel, OnResponseReceivedAsync, cancellationToken);
 
-            // Subscribe to confirmation channel
-            await _redis.SubscribeAsync(_confirmChannel, OnConfirmationReceivedAsync);
-
-            // Subscribe to responses channel
-            await _redis.SubscribeAsync(_responsesChannel, OnResponseReceivedAsync);
-
-            // Start worker pool
             _workerPool = new DispatchWorkerPool<TResponse>(
                 _options.DispatchWorkerCount,
                 _options.DispatchChannelCapacity,
@@ -355,10 +376,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             _redisSubscribed = true;
 
             _logger.LogInformation(
-                "Redis subscriptions created for stream '{StreamName}' " +
-                "({WorkerCount} dispatch workers)",
-                _streamName,
-                _options.DispatchWorkerCount);
+                "Redis subscriptions active for '{StreamName}'", _streamName);
         }
         finally
         {
@@ -373,10 +391,6 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         {
             if (!_redisSubscribed) return;
 
-            _logger.LogInformation(
-                "Removing Redis subscriptions for stream '{StreamName}' (no active subscribers)",
-                _streamName);
-
             await _redis.UnsubscribeAsync(_confirmChannel);
             await _redis.UnsubscribeAsync(_responsesChannel);
 
@@ -389,8 +403,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             _redisSubscribed = false;
 
             _logger.LogInformation(
-                "Redis subscriptions removed for stream '{StreamName}'",
-                _streamName);
+                "Redis subscriptions removed for '{StreamName}'", _streamName);
         }
         finally
         {
@@ -422,7 +435,6 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         try
         {
             var unsubscribeChannel = _channelResolver.GetUnsubscribeChannel(_streamName);
-
             var envelope = new UnsubscribeEnvelope
             {
                 RequestId = requestId,
@@ -433,15 +445,12 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             var data = _serializer.Serialize(envelope);
             await _redis.PublishAsync(unsubscribeChannel, data, cancellationToken);
 
-            _logger.LogInformation(
-                "Sent unsubscribe signal for RequestId '{RequestId}'",
-                requestId);
+            _logger.LogInformation("Sent unsubscribe for RequestId '{RequestId}'", requestId);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Failed to send unsubscribe signal for RequestId '{RequestId}'",
-                requestId);
+                "Failed to send unsubscribe for RequestId '{RequestId}'", requestId);
         }
     }
 
@@ -452,7 +461,8 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
-        // Complete all active subjects
+        StopWatchdog();
+
         foreach (var states in _byRequestId.Values)
             lock (states)
                 foreach (var s in states)
@@ -462,27 +472,8 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             state.Subject.OnCompleted();
 
         await UnsubscribeFromRedisAsync();
-
         _subscriptionLock.Dispose();
 
-        _logger.LogInformation(
-            "SubscriptionManager disposed for stream '{StreamName}'",
-            _streamName);
+        _logger.LogInformation("SubscriptionManager disposed for '{StreamName}'", _streamName);
     }
-}
-
-/// <summary>
-/// Lightweight preview for quick RequestId extraction
-/// Avoids full deserialization in the Redis callback
-/// </summary>
-internal class ResponsePreview
-{
-    [System.Text.Json.Serialization.JsonPropertyName("requestId")]
-    public string RequestId { get; set; } = string.Empty;
-
-    [System.Text.Json.Serialization.JsonPropertyName("epoch")]
-    public long Epoch { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("isFinal")]
-    public bool IsFinal { get; set; }
 }

@@ -133,7 +133,7 @@ internal class DispatchWorkerPool<TResponse> : IAsyncDisposable
         _logger.LogInformation("Stopping dispatch worker pool");
 
         // Signal all workers to stop
-        _cts.Cancel();
+        await _cts.CancelAsync();
 
         // Complete all writer channels
         foreach (var channel in _workerChannels)

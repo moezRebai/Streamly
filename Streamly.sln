@@ -8,6 +8,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Core.Runtime", "St
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Subscriber", "Streamly.Subscriber\Streamly.Subscriber.csproj", "{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Examples", "Examples", "{712C8C2E-EBE6-4CC8-8C1D-F9368E70F841}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.FakePublisher", "Examples\Streamly.FakePublisher\Streamly.FakePublisher.csproj", "{EA972F17-6584-43C3-8EAC-3CE29F57D073}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.FakeSubscriber", "Examples\Streamly.FakeSubscriber\Streamly.FakeSubscriber.csproj", "{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,5 +36,17 @@ Global
 		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2A9B2CFB-EE9B-436F-B99A-7F92566BD07A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EA972F17-6584-43C3-8EAC-3CE29F57D073}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EA972F17-6584-43C3-8EAC-3CE29F57D073}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EA972F17-6584-43C3-8EAC-3CE29F57D073}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EA972F17-6584-43C3-8EAC-3CE29F57D073}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{EA972F17-6584-43C3-8EAC-3CE29F57D073} = {712C8C2E-EBE6-4CC8-8C1D-F9368E70F841}
+		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190} = {712C8C2E-EBE6-4CC8-8C1D-F9368E70F841}
 	EndGlobalSection
 EndGlobal
