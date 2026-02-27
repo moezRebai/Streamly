@@ -1,11 +1,11 @@
 using System.Reactive.Linq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NATS.Client.Core;
 using Polly;
 using Polly.Retry;
-using StackExchange.Redis;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Models;
-using Streamly.Core.Runtime.Channel;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Subscriber.Configuration;
 using Streamly.Subscriber.Internal;
@@ -27,22 +27,21 @@ internal class StreamingSubscriber<TRequest, TResponse>
     : IStreamingSubscriber<TRequest, TResponse>, IAsyncDisposable
 {
     private readonly SubscriptionManager<TRequest, TResponse> _subscriptionManager;
-    private readonly IRedisConnectionManager _redis;
     private readonly IMessageSerializer _serializer;
     private readonly SubscriberOptions _options;
     private readonly ILogger<StreamingSubscriber<TRequest, TResponse>> _logger;
-
+    private readonly IStreamingTransport _transport;
+    private readonly ISubjectResolver _subjects;
     private readonly string _streamName;
-    private readonly string _requestsChannel;
     private readonly ResiliencePipeline _reconnectPolicy;
     private bool _disposed;
 
     public StreamingSubscriber(
         string streamName,
         SubscriptionManager<TRequest, TResponse> subscriptionManager,
-        IRedisConnectionManager redis,
         IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
+        IStreamingTransport transport,
+        ISubjectResolver subjects,
         IOptions<SubscriberOptions> options,
         ILogger<StreamingSubscriber<TRequest, TResponse>> logger)
     {
@@ -50,13 +49,12 @@ internal class StreamingSubscriber<TRequest, TResponse>
             throw new ArgumentException("Stream name cannot be null or whitespace", nameof(streamName));
 
         _subscriptionManager = subscriptionManager ?? throw new ArgumentNullException(nameof(subscriptionManager));
-        _redis = redis ?? throw new ArgumentNullException(nameof(redis));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _streamName = streamName;
-        _requestsChannel = channelResolver.GetRequestsChannel(_streamName);
         _reconnectPolicy = BuildReconnectPolicy();
     }
 
@@ -128,11 +126,12 @@ internal class StreamingSubscriber<TRequest, TResponse>
         };
 
         var data = _serializer.Serialize(envelope);
-        await _redis.PublishAsync(_requestsChannel, data, cancellationToken);
+        var requestsSubject = _subjects.GetRequestsSubject(_streamName);
+        await _transport.PublishAsync(requestsSubject, data, cancellationToken);
 
         _logger.LogDebug(
             "Published {Behavior} request to '{Channel}' (correlationId: {CorrelationId})",
-            behavior, _requestsChannel, correlationId);
+            behavior, requestsSubject, correlationId);
 
         var confirmed = await WaitForConfirmationAsync(state, cancellationToken);
 
@@ -191,7 +190,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
                 ShouldHandle = new PredicateBuilder()
                     .Handle<TimeoutException>()
                     .Handle<PublisherUnavailableException>()
-                    .Handle<RedisConnectionException>() 
+                    .Handle<NatsServerException>() 
                     .Handle<Exception>(ex => ex is not OperationCanceledException),
 
                 MaxRetryAttempts = _options.MaxReconnectAttempts,

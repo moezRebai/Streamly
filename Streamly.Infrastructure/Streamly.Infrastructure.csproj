@@ -7,9 +7,21 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.2" />
-      <PackageReference Include="Microsoft.NETCore.Platforms" Version="7.0.4" />
-      <PackageReference Include="StackExchange.Redis" Version="2.10.1" />
+        <!-- NATS transport -->
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
+        <PackageReference Include="NATS.Net" Version="2.7.2" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection"  Version="8.0.0" />
+        <PackageReference Include="Microsoft.Extensions.Options"              Version="8.0.0" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+        <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="8.0.0" />
+
+        <!-- Serialisation -->
+        <PackageReference Include="System.Text.Json"                          Version="8.0.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Streamly.Core\Streamly.Core.csproj" />
     </ItemGroup>
 
 </Project>

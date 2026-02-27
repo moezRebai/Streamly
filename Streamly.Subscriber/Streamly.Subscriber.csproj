@@ -16,7 +16,6 @@
 
     <ItemGroup>
       <ProjectReference Include="..\Streamly.Core.Runtime\Streamly.Core.Runtime.csproj" />
-      <ProjectReference Include="..\Streamly.Infrastructure\Streamly.Infrastructure.csproj" />
     </ItemGroup>
 
 </Project>

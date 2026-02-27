@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Streamly.Core.Runtime.Channel;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Infrastructure.Interfaces;
 
@@ -11,6 +11,10 @@ namespace Streamly.Core.Runtime.Leadership;
 /// - LeaderElectionService (manages leadership state)
 /// - HeartbeatPublisher (publishes heartbeats when leader)
 /// - LeaderMonitor (monitors leader health and triggers failover)
+/// 
+/// MIGRATION NOTE: Replaced IRedisConnectionManager → IStreamingTransport
+///                 Replaced IChannelNameResolver → ISubjectResolver
+///                 Injects ILeaderElection from Infrastructure
 /// </summary>
 internal class StreamLeadershipCoordinator : IAsyncDisposable
 {
@@ -26,9 +30,10 @@ internal class StreamLeadershipCoordinator : IAsyncDisposable
     public StreamLeadershipCoordinator(
         string streamName,
         string instanceId,
-        IRedisConnectionManager redis,
+        ILeaderElection infrastructureLeaderElection,
+        IStreamingTransport transport,
         IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
+        ISubjectResolver subjects,
         IOptions<LeaderElectionOptions> options,
         ILoggerFactory loggerFactory)
     {
@@ -39,22 +44,19 @@ internal class StreamLeadershipCoordinator : IAsyncDisposable
         
         _logger = loggerFactory.CreateLogger<StreamLeadershipCoordinator>();
 
-        // Create leader election service
+        // Create leader election service (wraps Infrastructure's ILeaderElection)
         LeaderElection = new LeaderElectionService(
             streamName,
             instanceId,
-            redis,
-            serializer,
-            channelResolver,
-            options,
+            infrastructureLeaderElection,
             loggerFactory.CreateLogger<LeaderElectionService>());
 
         // Create heartbeat publisher
         _heartbeatPublisher = new HeartbeatPublisher(
             LeaderElection,
-            redis,
+            transport,
             serializer,
-            channelResolver,
+            subjects,
             options,
             loggerFactory.CreateLogger<HeartbeatPublisher>());
 
@@ -121,7 +123,7 @@ internal class StreamLeadershipCoordinator : IAsyncDisposable
     /// <summary>
     /// Stop all leadership components
     /// </summary>
-    public async Task StopAsync(CancellationToken cancellationToken = default)
+    private async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (!_started)
             return;

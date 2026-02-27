@@ -1,40 +1,35 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// FILE: Streamly.Subscriber/Internal/SubscriptionManager.cs
-// CHANGES:
-//   1. Added _lastResponseTime + watchdog loop
-//   2. Watchdog notifies via state.OnReconnecting() instead of OnError
-//   3. Added StartWatchdogAsync / StopWatchdogAsync
-// ─────────────────────────────────────────────────────────────────────────────
-
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Models;
-using Streamly.Core.Runtime.Channel;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Subscriber.Configuration;
 using Streamly.Subscriber.Models;
 
 namespace Streamly.Subscriber.Internal;
 
-internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
+internal class SubscriptionManager<TRequest, TResponse>(
+    string streamName,
+    IStreamingTransport transport,
+    ISubjectResolver subjects,
+    IMessageSerializer serializer,
+    IOptions<SubscriberOptions> options,
+    ILogger<SubscriptionManager<TRequest, TResponse>> logger)
+    : IAsyncDisposable
 {
-    private readonly IRedisConnectionManager _redis;
-    private readonly IMessageSerializer _serializer;
-    private readonly IChannelNameResolver _channelResolver;
-    private readonly SubscriberOptions _options;
-    private readonly ILogger<SubscriptionManager<TRequest, TResponse>> _logger;
-
-    private readonly string _streamName;
-    private readonly string _responsesChannel;
-    private readonly string _confirmChannel;
+    private readonly IStreamingTransport _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+    private readonly ISubjectResolver _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));  
+    private readonly IMessageSerializer _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+    private readonly SubscriberOptions _options = options.Value ?? throw new ArgumentNullException(nameof(options));
+    private readonly ILogger<SubscriptionManager<TRequest, TResponse>> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     private readonly ConcurrentDictionary<string, List<SubscriptionState<TResponse>>> _byRequestId = new();
     private readonly ConcurrentDictionary<string, SubscriptionState<TResponse>> _byCorrelationId = new();
 
     private DispatchWorkerPool<TResponse>? _workerPool;
     private int _activeSubscriptionCount;
-    private bool _redisSubscribed;
+    private bool _transportSubscribed;
     private readonly SemaphoreSlim _subscriptionLock = new(1, 1);
     private bool _disposed;
 
@@ -43,30 +38,11 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
     private CancellationTokenSource? _watchdogCts;
     private Task? _watchdogTask;
 
-    public SubscriptionManager(
-        string streamName,
-        IRedisConnectionManager redis,
-        IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
-        IOptions<SubscriberOptions> options,
-        ILogger<SubscriptionManager<TRequest, TResponse>> logger)
-    {
-        _streamName = streamName;
-        _redis = redis ?? throw new ArgumentNullException(nameof(redis));
-        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
-        _options = options.Value ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-        _responsesChannel = _channelResolver.GetResponsesChannel(_streamName);
-        _confirmChannel = _channelResolver.GetConfirmChannel(_streamName);
-    }
-
     public async Task RegisterPendingAsync(
         SubscriptionState<TResponse> state,
         CancellationToken cancellationToken)
     {
-        await EnsureRedisSubscribedAsync(cancellationToken);
+        await EnsureTransportSubscribedAsync(cancellationToken);
 
         _byCorrelationId[state.CorrelationId] = state;
         Interlocked.Increment(ref _activeSubscriptionCount);
@@ -76,7 +52,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
 
         _logger.LogDebug(
             "Registered pending subscription '{CorrelationId}' for stream '{StreamName}'",
-            state.CorrelationId, _streamName);
+            state.CorrelationId, streamName);
     }
 
     public async Task UnregisterAsync(
@@ -104,7 +80,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         if (_activeSubscriptionCount <= 0)
         {
             StopWatchdog();
-            await UnsubscribeFromRedisAsync();
+            await UnsubscribeFromTransportAsync();
         }
     }
 
@@ -121,7 +97,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
 
         _logger.LogDebug(
             "Watchdog started for stream '{StreamName}' (timeout: {Timeout}ms)",
-            _streamName, _options.HeartbeatTimeout.TotalMilliseconds);
+            streamName, _options.HeartbeatTimeout.TotalMilliseconds);
     }
 
     private void StopWatchdog()
@@ -146,7 +122,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
                 _logger.LogWarning(
                     "Heartbeat timeout on '{StreamName}': no response for {Elapsed}ms " +
                     "(threshold: {Threshold}ms). Notifying subscribers.",
-                    _streamName,
+                    streamName,
                     (int)elapsed.TotalMilliseconds,
                     (int)_options.HeartbeatTimeout.TotalMilliseconds);
 
@@ -162,7 +138,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Watchdog error for stream '{StreamName}'", _streamName);
+                _logger.LogError(ex, "Watchdog error for stream '{StreamName}'", streamName);
             }
         }
     }
@@ -187,11 +163,11 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             state.ReconnectAttempts++;
 
             state.NotifyStatus(StreamStatus.Reconnecting(
-                _streamName,
+                streamName,
                 state.ReconnectAttempts,
                 _options.MaxReconnectAttempts,
                 new PublisherUnavailableException(
-                    $"No response from '{_streamName}' for {(int)_options.HeartbeatTimeout.TotalMilliseconds}ms")));
+                    $"No response from '{streamName}' for {(int)_options.HeartbeatTimeout.TotalMilliseconds}ms")));
         }
     }
 
@@ -215,17 +191,17 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
             {
                 _logger.LogInformation(
                     "Stream restored for RequestId '{RequestId}' on '{StreamName}'",
-                    state.RequestId, _streamName);
+                    state.RequestId, streamName);
 
                 state.ReconnectAttempts = 0;
-                state.NotifyStatus(StreamStatus.Active(_streamName));
+                state.NotifyStatus(StreamStatus.Active(streamName));
             }
         }
     }
 
     #endregion
 
-    #region Redis Message Handlers
+    #region Transport Message Handlers
 
     private Task OnConfirmationReceivedAsync(byte[] data)
     {
@@ -233,7 +209,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         {
             var confirmation = _serializer.Deserialize<ConfirmationMessage>(data);
 
-            if (confirmation.StreamName != _streamName)
+            if (confirmation.StreamName != streamName)
                 return Task.CompletedTask;
 
             if (!_byCorrelationId.TryRemove(confirmation.CorrelationId, out var state))
@@ -258,7 +234,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing confirmation for '{StreamName}'", _streamName);
+            _logger.LogError(ex, "Error processing confirmation for '{StreamName}'", streamName);
         }
 
         return Task.CompletedTask;
@@ -280,7 +256,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error routing response for '{StreamName}'", _streamName);
+            _logger.LogError(ex, "Error routing response for '{StreamName}'", streamName);
         }
 
         return Task.CompletedTask;
@@ -338,7 +314,7 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         {
             // Signal reconnect needed - StreamingSubscriber handles it via Polly
             state.NotifyStatus(StreamStatus.Reconnecting(
-                _streamName,
+                streamName,
                 ++state.ReconnectAttempts,
                 _options.MaxReconnectAttempts,
                 new PublisherUnavailableException($"Stream closed: {reason}")));
@@ -353,30 +329,38 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
 
     #endregion
 
-    #region Redis Subscription Management
+    #region Transport Subscription Management
 
-    private async Task EnsureRedisSubscribedAsync(CancellationToken cancellationToken)
+    private async Task EnsureTransportSubscribedAsync(CancellationToken cancellationToken)
     {
-        if (_redisSubscribed) return;
+        if (_transportSubscribed) return;
 
         await _subscriptionLock.WaitAsync(cancellationToken);
         try
         {
-            if (_redisSubscribed) return;
+            if (_transportSubscribed) return;
 
-            await _redis.SubscribeAsync(_confirmChannel, OnConfirmationReceivedAsync, cancellationToken);
-            await _redis.SubscribeAsync(_responsesChannel, OnResponseReceivedAsync, cancellationToken);
+            // Get subject names from resolver
+            var responsesSubject = _subjects.GetResponsesWildcard(streamName);
+            var confirmSubject = _subjects.GetConfirmSubject(streamName);
 
+            // Subscribe to transport
+            await _transport.SubscribeAsync(confirmSubject, OnConfirmationReceivedAsync, cancellationToken);
+            await _transport.SubscribeAsync(responsesSubject, OnResponseReceivedAsync, cancellationToken);
+
+            // Initialize worker pool for parallel dispatch
             _workerPool = new DispatchWorkerPool<TResponse>(
                 _options.DispatchWorkerCount,
                 _options.DispatchChannelCapacity,
                 ProcessDispatchItemAsync,
                 _logger);
 
-            _redisSubscribed = true;
+            _transportSubscribed = true;
 
             _logger.LogInformation(
-                "Redis subscriptions active for '{StreamName}'", _streamName);
+                "Transport subscriptions active for '{StreamName}' " +
+                "(confirm: '{ConfirmSubject}', responses: '{ResponsesSubject}')",
+                streamName, confirmSubject, responsesSubject);
         }
         finally
         {
@@ -384,26 +368,32 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         }
     }
 
-    private async Task UnsubscribeFromRedisAsync()
+    private async Task UnsubscribeFromTransportAsync()
     {
         await _subscriptionLock.WaitAsync();
         try
         {
-            if (!_redisSubscribed) return;
+            if (!_transportSubscribed) return;
 
-            await _redis.UnsubscribeAsync(_confirmChannel);
-            await _redis.UnsubscribeAsync(_responsesChannel);
+            // Get subject names from resolver
+            var responsesSubject = _subjects.GetResponsesWildcard(streamName);
+            var confirmSubject = _subjects.GetConfirmSubject(streamName);
+            
+            // Unsubscribe from transport
+            await _transport.UnsubscribeAsync(confirmSubject);
+            await _transport.UnsubscribeAsync(responsesSubject);
 
+            // Dispose worker pool
             if (_workerPool != null)
             {
                 await _workerPool.DisposeAsync();
                 _workerPool = null;
             }
 
-            _redisSubscribed = false;
+            _transportSubscribed = false;
 
             _logger.LogInformation(
-                "Redis subscriptions removed for '{StreamName}'", _streamName);
+                "Transport subscriptions removed for '{StreamName}'", streamName);
         }
         finally
         {
@@ -434,18 +424,21 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
     {
         try
         {
-            var unsubscribeChannel = _channelResolver.GetUnsubscribeChannel(_streamName);
+            var unsubscribeSubject = _subjects.GetUnsubscribeSubject(streamName);
+
             var envelope = new UnsubscribeEnvelope
             {
                 RequestId = requestId,
-                StreamName = _streamName,
+                StreamName = streamName,
                 UnsubscribedAt = DateTime.UtcNow
             };
 
             var data = _serializer.Serialize(envelope);
-            await _redis.PublishAsync(unsubscribeChannel, data, cancellationToken);
+            await _transport.PublishAsync(unsubscribeSubject, data, cancellationToken);
 
-            _logger.LogInformation("Sent unsubscribe for RequestId '{RequestId}'", requestId);
+            _logger.LogInformation(
+                "Sent unsubscribe for RequestId '{RequestId}' to '{Subject}'",
+                requestId, unsubscribeSubject);
         }
         catch (Exception ex)
         {
@@ -471,9 +464,9 @@ internal class SubscriptionManager<TRequest, TResponse> : IAsyncDisposable
         foreach (var state in _byCorrelationId.Values)
             state.Subject.OnCompleted();
 
-        await UnsubscribeFromRedisAsync();
+        await UnsubscribeFromTransportAsync();
         _subscriptionLock.Dispose();
 
-        _logger.LogInformation("SubscriptionManager disposed for '{StreamName}'", _streamName);
+        _logger.LogInformation("SubscriptionManager disposed for '{StreamName}'", streamName);
     }
 }

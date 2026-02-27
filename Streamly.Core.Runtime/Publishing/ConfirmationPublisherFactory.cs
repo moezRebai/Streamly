@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Logging;
-using Streamly.Core.Runtime.Channel;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Runtime.Leadership;
 using Streamly.Infrastructure.Interfaces;
 
@@ -8,17 +8,16 @@ namespace Streamly.Core.Runtime.Publishing;
 /// <summary>
 /// Factory for creating ConfirmationPublisher instances per stream.
 /// Uses ILeaderElectionFactory to get the correct per-stream leader election service.
+/// 
 /// </summary>
 internal class ConfirmationPublisherFactory(
-    ILeaderElectionFactory leaderElectionFactory, // ← Not ILeaderElectionService
-    IRedisConnectionManager redis,
+    ILeaderElectionFactory leaderElectionFactory,
+    IStreamingTransport transport,
     IMessageSerializer serializer,
-    IChannelNameResolver channelResolver,
+    ISubjectResolver subjects,
     ILoggerFactory loggerFactory)
     : IConfirmationPublisherFactory
 {
-    // ← Factory, not service
-
     public ConfirmationPublisher Create(string streamName)
     {
         // Get the per-stream leader election instance
@@ -26,10 +25,10 @@ internal class ConfirmationPublisherFactory(
 
         return new ConfirmationPublisher(
             streamName,
-            leaderElection,       // ← Correct per-stream instance
-            redis,
+            leaderElection,
+            transport,
             serializer,
-            channelResolver,
+            subjects,
             loggerFactory.CreateLogger<ConfirmationPublisher>());
     }
 }

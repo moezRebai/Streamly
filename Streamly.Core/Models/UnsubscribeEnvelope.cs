@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Streamly.Core.Models;
 
 /// <summary>
-/// Published to Redis when client unsubscribes
+/// Published to transport when client unsubscribes
 /// Leader decrements subscriber count
 /// Auto-closes stream if count reaches 0 (Live only)
 /// </summary>

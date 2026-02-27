@@ -1,36 +1,54 @@
 ﻿using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Streamly.Core.Runtime.Channel;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Infrastructure.Interfaces;
+using Streamly.Infrastructure.Nats;
 
 namespace Streamly.Core.Runtime.Leadership;
 
 /// <summary>
-/// Factory implementation for creating leader election services
-/// Maintains one instance per stream name
+/// Factory implementation for creating leader election services.
+/// Maintains one instance per stream name.
+/// 
+/// CRITICAL: Each stream gets its own NatsLeaderElection instance with stream-specific key.
+/// This enables independent leadership per stream (load distribution + fault isolation).
 /// </summary>
-public class LeaderElectionFactory(
-    IRedisConnectionManager redis,
-    IMessageSerializer serializer,
-    IChannelNameResolver channelResolver,
-    IOptions<StreamlyRuntimeOptions> runtimeOptions,
-    IOptions<LeaderElectionOptions> leaderElectionOptions,
-    ILoggerFactory loggerFactory)
-    : ILeaderElectionFactory, IAsyncDisposable
+public class LeaderElectionFactory : ILeaderElectionFactory, IAsyncDisposable
 {
-    private readonly IRedisConnectionManager _redis = redis ?? throw new ArgumentNullException(nameof(redis));
-    private readonly IMessageSerializer _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-    private readonly IChannelNameResolver _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
-    private readonly IOptions<StreamlyRuntimeOptions> _runtimeOptions = runtimeOptions ?? throw new ArgumentNullException(nameof(runtimeOptions));
-    private readonly IOptions<LeaderElectionOptions> _leaderElectionOptions = leaderElectionOptions ?? throw new ArgumentNullException(nameof(leaderElectionOptions));
-    private readonly ILoggerFactory _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
-    private readonly ILogger<LeaderElectionFactory> _logger = loggerFactory.CreateLogger<LeaderElectionFactory>();
+    // ✅ CHANGED: Instead of injecting ILeaderElection, inject components to CREATE them
+    private readonly NatsConnectionManager _transport;
+    private readonly IOptions<NatsConnectionOptions> _natsOptions;
+    private readonly IMessageSerializer _serializer;
+    private readonly ISubjectResolver _subjects;
+    private readonly IOptions<StreamlyRuntimeOptions> _runtimeOptions;
+    private readonly IOptions<LeaderElectionOptions> _leaderElectionOptions;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly ILogger<LeaderElectionFactory> _logger;
     
     private readonly ConcurrentDictionary<string, Lazy<StreamLeadershipCoordinator>> _coordinators = new();
     private readonly SemaphoreSlim _startLock = new(1, 1);
     private bool _disposed;
+
+    public LeaderElectionFactory(
+        NatsConnectionManager transport,                      // ✅ CHANGED: Direct dependency, not IStreamingTransport
+        IOptions<NatsConnectionOptions> natsOptions,          // ✅ NEW: Need NATS options
+        IMessageSerializer serializer,
+        ISubjectResolver subjects,
+        IOptions<StreamlyRuntimeOptions> runtimeOptions,
+        IOptions<LeaderElectionOptions> leaderElectionOptions,
+        ILoggerFactory loggerFactory)
+    {
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _natsOptions = natsOptions ?? throw new ArgumentNullException(nameof(natsOptions));
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
+        _runtimeOptions = runtimeOptions ?? throw new ArgumentNullException(nameof(runtimeOptions));
+        _leaderElectionOptions = leaderElectionOptions ?? throw new ArgumentNullException(nameof(leaderElectionOptions));
+        _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _logger = loggerFactory.CreateLogger<LeaderElectionFactory>();
+    }
 
     public ILeaderElectionService GetOrCreate(string streamName)
     {
@@ -57,12 +75,20 @@ public class LeaderElectionFactory(
             "Creating leadership coordinator for stream '{StreamName}'",
             streamName);
 
+        // ✅ CRITICAL FIX: Create a NEW NatsLeaderElection for THIS stream
+        var streamLeaderElection = new NatsLeaderElection(
+            _transport,
+            _natsOptions,
+            _loggerFactory.CreateLogger<NatsLeaderElection>(),
+            streamName);  // ← Stream-specific instance!
+
         return new StreamLeadershipCoordinator(
             streamName,
             _runtimeOptions.Value.InstanceId,
-            _redis,
+            streamLeaderElection,  // ← Pass stream-specific instance
+            _transport,
             _serializer,
-            _channelResolver,
+            _subjects,
             _leaderElectionOptions,
             _loggerFactory);
     }

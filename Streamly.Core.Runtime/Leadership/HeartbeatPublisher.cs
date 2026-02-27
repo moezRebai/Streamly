@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Streamly.Core.Runtime.Channel;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Infrastructure.Interfaces;
 
@@ -9,37 +9,40 @@ namespace Streamly.Core.Runtime.Leadership;
 /// <summary>
 /// Publishes heartbeat messages when instance is leader
 /// Internal component - managed by StreamLeadershipCoordinator
+/// 
+/// MIGRATION NOTE: Replaced IRedisConnectionManager → IStreamingTransport
+///                 Replaced IChannelNameResolver → ISubjectResolver
 /// </summary>
 internal class HeartbeatPublisher : IAsyncDisposable
 {
     private readonly ILeaderElectionService _leaderElection;
-    private readonly IRedisConnectionManager _redis;
+    private readonly IStreamingTransport _transport;
     private readonly IMessageSerializer _serializer;
-    private readonly IChannelNameResolver _channelResolver;
+    private readonly ISubjectResolver _subjects;
     private readonly LeaderElectionOptions _options;
     private readonly ILogger<HeartbeatPublisher> _logger;
     
-    private readonly string _heartbeatChannel;
+    private readonly string _heartbeatSubject;
     private CancellationTokenSource? _runningCts;
     private Task? _publishTask;
     private bool _disposed;
 
     public HeartbeatPublisher(
         ILeaderElectionService leaderElection,
-        IRedisConnectionManager redis,
+        IStreamingTransport transport,
         IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
+        ISubjectResolver subjects,
         IOptions<LeaderElectionOptions> options,
         ILogger<HeartbeatPublisher> logger)
     {
         _leaderElection = leaderElection ?? throw new ArgumentNullException(nameof(leaderElection));
-        _redis = redis ?? throw new ArgumentNullException(nameof(redis));
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-        _heartbeatChannel = _channelResolver.GetHeartbeatChannel(_leaderElection.StreamName);
+        _heartbeatSubject = _subjects.GetHeartbeatSubject(_leaderElection.StreamName);
     }
 
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -162,7 +165,7 @@ internal class HeartbeatPublisher : IAsyncDisposable
 
         var data = _serializer.Serialize(heartbeat);
         
-        var subscriberCount = await _redis.PublishAsync(_heartbeatChannel, data, cancellationToken);
+        var subscriberCount = await _transport.PublishAsync(_heartbeatSubject, data, cancellationToken);
 
         _logger.LogTrace(
             "Published heartbeat for stream '{StreamName}' (epoch {Epoch}) to {SubscriberCount} subscribers",

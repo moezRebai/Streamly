@@ -4,7 +4,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
 using Streamly.Core.ChangeDetection;
-using Streamly.Core.Runtime.Channel;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Core.Runtime.Context;
 using Streamly.Core.Runtime.Leadership;
@@ -12,12 +11,16 @@ using Streamly.Core.Runtime.Publishing;
 using Streamly.Core.Runtime.Registration;
 using Streamly.Core.Runtime.RequestManagement;
 using Streamly.Infrastructure.Interfaces;
-using Streamly.Infrastructure.Redis;
+using Streamly.Infrastructure.Nats;
+using Streamly.Infrastructure.Serialization;
 
 namespace Streamly.Core.Runtime;
 
 public static class StreamlyServiceCollectionExtensions
 {
+    /// <summary>
+    /// Add Streamly with NATS transport
+    /// </summary>
     public static IServiceCollection AddStreamly(
         this IServiceCollection services,
         IConfiguration configuration,
@@ -40,9 +43,6 @@ public static class StreamlyServiceCollectionExtensions
         services.Configure<StreamlyRuntimeOptions>(
             configuration.GetSection(StreamlyRuntimeOptions.SectionName));
 
-        services.Configure<RedisConnectionOptions>(
-            configuration.GetSection(RedisConnectionOptions.SectionName));
-
         services.Configure<LeaderElectionOptions>(
             configuration.GetSection(LeaderElectionOptions.SectionName));
 
@@ -50,14 +50,14 @@ public static class StreamlyServiceCollectionExtensions
         services.AddSingleton<IValidateOptions<StreamlyRuntimeOptions>,
             StreamlyRuntimeOptionsValidator>();
 
-        // 3. Register Infrastructure layer
-        services.TryAddSingleton<IRedisConnectionManager, RedisConnectionManager>();
+        // 3. Register NATS Infrastructure
+        services.AddNatsPublisherInfrastructure(configuration.GetSection("Streamly:Nats"));
+        services.TryAddSingleton<ISubjectResolver, NatsSubjectResolver>();
         services.TryAddSingleton<IMessageSerializer, MessageSerializer>();
 
-        // 4. Register Runtime core services
+        // 4. Register Runtime core services (transport-agnostic)
         services.AddSingleton(options);
         services.TryAddSingleton<IStreamRegistry, StreamRegistry>();
-        services.TryAddSingleton<IChannelNameResolver, ChannelNameResolver>();
         services.TryAddSingleton<ILeaderElectionFactory, LeaderElectionFactory>();
 
         // 5. Register generic runtime components
@@ -76,10 +76,9 @@ public static class StreamlyServiceCollectionExtensions
         services.TryAddSingleton(typeof(IRequestManager<,>),
             typeof(RequestManager<,>));
 
-        // 6. FIX: ConfirmationPublisherFactory uses ILeaderElectionFactory (not ILeaderElectionService)
         services.TryAddSingleton<IConfirmationPublisherFactory, ConfirmationPublisherFactory>();
 
-        // 7. Register all handlers + their change detectors
+        // 6. Register all handlers + their change detectors
         foreach (var handler in options.Handlers)
         {
             RegisterHandler(services, handler);

@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
 using Streamly.Core.Models;
-using Streamly.Core.Runtime.Channel;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Core.Runtime.Leadership;
 using Streamly.Core.Runtime.Registration;
@@ -16,20 +15,20 @@ namespace Streamly.Core.Runtime.Publishing;
 /// 1. Check leadership
 /// 2. Compare with latest image
 /// 3. Update latest image
-/// 4. Publish to Redis
+/// 4. Publish to transport
+/// 
 /// </summary>
 internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequest, TResponse>
 {
     private readonly ILeaderElectionService _leaderElection;
     private readonly IRequestRegistry<TRequest, TResponse> _registry;
     private readonly IResponseChangeDetector<TResponse> _changeDetector;
-    private readonly IRedisConnectionManager _redis;
+    private readonly IStreamingTransport _transport;
     private readonly IMessageSerializer _serializer;
-    private readonly IChannelNameResolver _channelResolver;
+    private readonly ISubjectResolver _subjects;
     private readonly ILogger<ResponsePublisher<TRequest, TResponse>> _logger;
 
     private readonly string _streamName;
-    private readonly string _responsesChannel;
     private readonly string _instanceId;
 
     public ResponsePublisher(
@@ -37,28 +36,25 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
         ILeaderElectionFactory leaderElectionFactory,
         IRequestRegistry<TRequest, TResponse> registry,
         IResponseChangeDetector<TResponse> changeDetector,
-        IRedisConnectionManager redis,
+        IStreamingTransport transport,
         IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
+        ISubjectResolver subjects,
         IOptions<StreamlyRuntimeOptions> runtimeOptions,
         ILogger<ResponsePublisher<TRequest, TResponse>> logger)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _changeDetector = changeDetector ?? throw new ArgumentNullException(nameof(changeDetector));
-        _redis = redis ?? throw new ArgumentNullException(nameof(redis));
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _instanceId = runtimeOptions?.Value.InstanceId ?? throw new ArgumentNullException(nameof(runtimeOptions));
+        _instanceId = runtimeOptions.Value.InstanceId ?? throw new ArgumentNullException(nameof(runtimeOptions));
 
         // Get stream name from registry
         _streamName = streamRegistry.GetStreamName<TRequest>();
 
         // Get leader election service for this stream
         _leaderElection = leaderElectionFactory.GetOrCreate(_streamName);
-
-        // Resolve responses channel name
-        _responsesChannel = _channelResolver.GetResponsesChannel(_streamName);
     }
 
     public async Task PublishAsync(
@@ -156,7 +152,7 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
             CloseReason = closeReason
         };
 
-        await PublishToRedisAsync(message, cancellationToken);
+        await PublishToTransportAsync(message, requestId, cancellationToken);
 
         // Step 7: If closing, broadcast close event to service instances
         if (closeReason.HasValue)
@@ -220,14 +216,14 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
                 Timestamp = DateTime.UtcNow
             };
 
-            var eventsChannel = _channelResolver.GetEventsChannel(_streamName);
+            var eventsSubject = _subjects.GetCloseEventsSubject(_streamName);
             var eventData = _serializer.Serialize(closeEvent);
 
-            await _redis.PublishAsync(eventsChannel, eventData, cancellationToken);
+            await _transport.PublishAsync(eventsSubject, eventData, cancellationToken);
 
             _logger.LogInformation(
                 "Published close event for request '{RequestId}' " +
-                "to events channel (reason: {Reason})",
+                "to events subject (reason: {Reason})",
                 requestId,
                 reason);
         }
@@ -239,16 +235,22 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
         }
     }
 
-    private async Task PublishToRedisAsync(
+    private async Task PublishToTransportAsync(
         InternalResponseMessage<TResponse> message,
+        string requestId,
         CancellationToken cancellationToken)
     {
         try
         {
             var data = _serializer.Serialize(message);
 
-            var subscriberCount = await _redis.PublishAsync(
-                _responsesChannel,
+            // IMPORTANT: Pass requestId for NATS per-request subjects
+            // Redis: returns "streams.responses.{streamName}" (single channel)
+            // NATS:  returns "streams.responses.{streamName}.{requestId}" (per-request subject)
+            var responsesSubject = _subjects.GetResponsesSubject(_streamName, requestId);
+
+            var subscriberCount = await _transport.PublishAsync(
+                responsesSubject,
                 data,
                 cancellationToken);
 
@@ -269,5 +271,4 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
             throw;
         }
     }
-
 }

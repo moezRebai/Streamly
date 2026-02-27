@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Models;
-using Streamly.Core.Runtime.Channel;
 using Streamly.Core.Runtime.Leadership;
 using Streamly.Infrastructure.Interfaces;
 
@@ -20,34 +20,37 @@ namespace Streamly.Core.Runtime.Publishing;
 ///   - Prevents duplicate confirmations (all instances would send same thing)
 ///   - Leader is authoritative for subscriber count management
 ///   - Consistent with leader-only response publishing
+///   
+/// MIGRATION NOTE: Replaced IRedisConnectionManager → IStreamingTransport
+///                 Replaced IChannelNameResolver → ISubjectResolver
+///                 Need to add GetConfirmSubject() to ISubjectResolver!
 /// </summary>
 internal class ConfirmationPublisher
 {
     private readonly ILeaderElectionService _leaderElection;
-    private readonly IRedisConnectionManager _redis;
+    private readonly IStreamingTransport _transport;
     private readonly IMessageSerializer _serializer;
-    private readonly IChannelNameResolver _channelResolver;
+    private readonly ISubjectResolver _subjects;
     private readonly ILogger<ConfirmationPublisher> _logger;
 
     private readonly string _streamName;
-    private readonly string _confirmChannel;
+    private readonly string _confirmSubject;
 
     public ConfirmationPublisher(
         string streamName,
         ILeaderElectionService leaderElection,
-        IRedisConnectionManager redis,
+        IStreamingTransport transport,
         IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
+        ISubjectResolver subjects,
         ILogger<ConfirmationPublisher> logger)
     {
         _streamName = streamName;
         _leaderElection = leaderElection ?? throw new ArgumentNullException(nameof(leaderElection));
-        _redis = redis ?? throw new ArgumentNullException(nameof(redis));
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-        _confirmChannel = _channelResolver.GetConfirmChannel(_streamName);
+        _confirmSubject = _subjects.GetConfirmSubject(_streamName);
     }
 
     /// <summary>
@@ -82,7 +85,7 @@ internal class ConfirmationPublisher
 
             var data = _serializer.Serialize(confirmation);
 
-            await _redis.PublishAsync(_confirmChannel, data, cancellationToken);
+            await _transport.PublishAsync(_confirmSubject, data, cancellationToken);
 
             _logger.LogInformation(
                 "Sent confirmation: correlationId '{CorrelationId}' → requestId '{RequestId}'",

@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
 using Streamly.Core.Models;
-using Streamly.Core.Runtime.Channel;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Core.Runtime.Context;
 using Streamly.Core.Runtime.Leadership;
@@ -23,15 +22,15 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
     private readonly IRequestIdentityProvider<TRequest> _identityProvider;
     private readonly IStreamingRequestHandler<TRequest, TResponse> _handler;
     private readonly ILeaderElectionService _leaderElection;
-    private readonly IRedisConnectionManager _redis;
     private readonly IMessageSerializer _serializer;
     private readonly IOptions<StateSyncOptions> _stateSyncOptions;
     private readonly ILogger<RequestManager<TRequest, TResponse>> _logger;
     private readonly IStreamingContextFactory<TRequest, TResponse> _contextFactory;
-    private readonly IChannelNameResolver _channelResolver;
     private readonly ConfirmationPublisher _confirmationPublisher;
-    private readonly string _requestsChannel;
-    private readonly string _batchChannel;
+    private readonly IStreamingTransport _transport;
+    private readonly ISubjectResolver _subjects;
+    private readonly string _requestsSubject;
+    private readonly string _batchSubject;
 
     private CancellationTokenSource? _batchSyncCts;
     private Task? _batchSyncTask;
@@ -48,41 +47,40 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         IRequestIdentityProvider<TRequest> identityProvider,
         IStreamingRequestHandler<TRequest, TResponse> handler,
         ILeaderElectionFactory leaderElectionFactory,
-        IRedisConnectionManager redis,
-        IMessageSerializer serializer,
-        IChannelNameResolver channelResolver,
+        IStreamingTransport transport,
+        ISubjectResolver subjects,
         IOptions<StateSyncOptions> stateSyncOptions,
         IStreamingContextFactory<TRequest, TResponse> contextFactory,
         IConfirmationPublisherFactory confirmationPublisherFactory,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory, 
+        IMessageSerializer serializer)
     {
         _streamName = streamRegistry.GetStreamName<TRequest>();
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _identityProvider = identityProvider ?? throw new ArgumentNullException(nameof(identityProvider));
         _handler = handler ?? throw new ArgumentNullException(nameof(handler));
-        _redis = redis ?? throw new ArgumentNullException(nameof(redis));
-        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        _channelResolver = channelResolver ?? throw new ArgumentNullException(nameof(channelResolver));
         _stateSyncOptions = stateSyncOptions ?? throw new ArgumentNullException(nameof(stateSyncOptions));
         _logger = loggerFactory.CreateLogger<RequestManager<TRequest, TResponse>>();
 
         _contextFactory = contextFactory ?? throw new ArgumentNullException(nameof(contextFactory));
+        _serializer = serializer;
         _confirmationPublisher = confirmationPublisherFactory.Create(_streamName);
 
+        _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
+        
         // Get leader election service for this stream
         _leaderElection = leaderElectionFactory.GetOrCreate(_streamName);
         _currentEpoch = _leaderElection.CurrentEpoch;
 
         // Resolve channel names
-        _requestsChannel = channelResolver.GetRequestsChannel(_streamName);
-        _batchChannel = channelResolver.GetBatchChannel(_streamName);
+        _requestsSubject = subjects.GetRequestsSubject(_streamName);
+        _batchSubject = subjects.GetBatchSyncSubject(_streamName);
 
         // Subscribe to leadership changes
         _leaderElection.LeadershipChanged += OnLeadershipChanged;
 
-        _logger.LogInformation(
-            "RequestManager created for stream '{StreamName}'",
-            _streamName);
+        _logger.LogInformation("RequestManager created for stream '{StreamName}'", _streamName);
     }
 
     #region Lifecycle Management
@@ -99,19 +97,19 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         try
         {
             // Subscribe to incoming requests
-            await _redis.SubscribeAsync(_requestsChannel, OnRequestReceivedAsync);
+            await _transport.SubscribeAsync(_requestsSubject, OnRequestReceivedAsync, cancellationToken);
 
             // Subscribe to batch sync
-            await _redis.SubscribeAsync(_batchChannel, OnBatchSyncReceivedAsync);
+            await _transport.SubscribeAsync(_batchSubject, OnBatchSyncReceivedAsync, cancellationToken);
 
-            // Subscribe to unsubscribe signals   ← NEW
-            var unsubscribeChannel = _channelResolver.GetUnsubscribeChannel(_streamName);
-            await _redis.SubscribeAsync(unsubscribeChannel, OnUnsubscribeReceivedAsync, cancellationToken);
-
+            // Subscribe to unsubscribe signals
+            var unsubscribeSubject = _subjects.GetUnsubscribeSubject(_streamName);
+            await _transport.SubscribeAsync(unsubscribeSubject, OnUnsubscribeReceivedAsync, cancellationToken);
+            
             // Subscribe to close events from leader  ← NEW
-            var eventsChannel = _channelResolver.GetEventsChannel(_streamName);
-            await _redis.SubscribeAsync(eventsChannel, OnCloseEventReceivedAsync, cancellationToken);
-
+            var eventsSubject = _subjects.GetCloseEventsSubject(_streamName);
+            await _transport.SubscribeAsync(eventsSubject, OnCloseEventReceivedAsync, cancellationToken);
+            
             // Start batch sync loop
             _batchSyncCts = new CancellationTokenSource();
             _batchSyncTask = RunBatchSyncLoopAsync(_batchSyncCts.Token);
@@ -161,8 +159,8 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
             await CloseAllRequestsAsync(CloseReason.Shutdown, cancellationToken);
 
             // Unsubscribe from channels
-            await _redis.UnsubscribeAsync(_requestsChannel, cancellationToken);
-            await _redis.UnsubscribeAsync(_batchChannel, cancellationToken);
+            await _transport.UnsubscribeAsync(_requestsSubject, cancellationToken);
+            await _transport.UnsubscribeAsync(_batchSubject, cancellationToken);
 
             _started = false;
 
@@ -506,7 +504,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
             };
 
             var data = _serializer.Serialize(batch);
-            var subscriberCount = await _redis.PublishAsync(_batchChannel, data, cancellationToken);
+            var subscriberCount = await _transport.PublishAsync(_batchSubject, data, cancellationToken);
 
             _logger.LogTrace(
                 "Published batch sync for stream '{StreamName}' to {SubscriberCount} subscribers",
@@ -580,7 +578,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
     {
         try
         {
-            if (_registry.TryGet(snapshot.RequestId, out var existing))
+            if (_registry.TryGet(snapshot.RequestId, out _))
             {
                 // Request exists locally - reconcile state
                 _logger.LogTrace(
@@ -740,9 +738,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Error processing incoming request for stream '{StreamName}'",
-                _streamName);
+            _logger.LogError(ex, "Error processing incoming request for stream '{StreamName}'", _streamName);
         }
     }
 
@@ -783,7 +779,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
                     m.SubscriberCount);
 
                 // Auto-close Live stream when no subscribers
-                if (m.StreamBehavior == StreamBehavior.Live && m.SubscriberCount == 0)
+                if (m is { StreamBehavior: StreamBehavior.Live, SubscriberCount: 0 })
                 {
                     shouldClose = true;
                 }

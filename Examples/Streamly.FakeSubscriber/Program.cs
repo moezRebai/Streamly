@@ -8,6 +8,9 @@ var host = Host.CreateDefaultBuilder(args)
             options.AddSubscriber<SpotRequest, SpotPrice>("SpotPricer");
         });
 
+        // Add SUBSCRIBER components (reuses existing NATS infrastructure)
+        //services.AddSubscriberComponents<SpotPriceRequest, SpotPrice>("SpotPricer");
+
         // Register the test worker that drives the two clients
         services.AddHostedService<SubscriberWorker>();
     })

@@ -7,6 +7,10 @@ namespace Streamly.Core.Runtime.Leadership;
 /// <summary>
 /// Monitors leader heartbeats and attempts to acquire leadership if leader dies
 /// Internal component - managed by StreamLeadershipCoordinator
+/// 
+/// MIGRATION NOTE: No changes needed! LeaderMonitor doesn't use Redis directly.
+///                 It monitors LeaderElectionService events and the Infrastructure
+///                 layer handles heartbeat subscription internally.
 /// </summary>
 internal class LeaderMonitor : IAsyncDisposable
 {
@@ -34,14 +38,16 @@ internal class LeaderMonitor : IAsyncDisposable
         _leaderElection.LeadershipChanged += OnLeadershipChanged;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken = default)
+    public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+
         if (_runningCts != null)
         {
             _logger.LogWarning(
                 "LeaderMonitor already started for stream '{StreamName}'",
                 _leaderElection.StreamName);
-            return Task.CompletedTask;
+            return;
         }
 
         _logger.LogInformation(
@@ -50,8 +56,6 @@ internal class LeaderMonitor : IAsyncDisposable
 
         _runningCts = new CancellationTokenSource();
         _monitorTask = RunMonitorLoopAsync(_runningCts.Token);
-
-        return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)

@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 using Streamly.Infrastructure.Execptions;
 using Streamly.Infrastructure.Interfaces;
 
-namespace Streamly.Infrastructure.Redis;
+namespace Streamly.Infrastructure.Serialization;
 
 /// <summary>
 /// JSON-based message serializer using System.Text.Json.
