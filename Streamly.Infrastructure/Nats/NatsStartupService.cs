@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Streamly.Core.Abstractions;
+using Microsoft.Extensions.Options;
+using Streamly.Core.Configurations;
 
 namespace Streamly.Infrastructure.Nats;
 
@@ -12,6 +13,7 @@ namespace Streamly.Infrastructure.Nats;
 /// </summary>
 internal sealed class NatsStartupService(
     NatsConnectionManager connectionManager,
+    IOptions<StreamlyRuntimeOptions> runtimeOptions,
     ILogger<NatsStartupService> logger)
     : IHostedService
 {
@@ -21,6 +23,10 @@ internal sealed class NatsStartupService(
 
         // Just connect to NATS
         await connectionManager.ConnectAsync(cancellationToken);
+        
+        // Hard fail if InstanceId already taken by another running instance
+        await connectionManager.EnsureUniqueInstanceAsync(
+            runtimeOptions.Value.InstanceId, cancellationToken);
         
         logger.LogInformation("NATS infrastructure ready");
     }

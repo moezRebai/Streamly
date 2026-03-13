@@ -5,119 +5,115 @@ using NATS.Client.Core;
 using NATS.Client.KeyValueStore;
 using NATS.Net;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 
 namespace Streamly.Infrastructure.Nats;
 
 /// <summary>
-/// NATS JetStream KV implementation of <see cref="ILeaderElection"/>.
+/// NATS JetStream KV implementation of leader election with split-brain prevention.
 ///
-/// How it works (vs Redis ~300 lines → NATS ~20 lines of core logic):
-///
-///   Redis approach:
-///     SET leader:pricing-service {instanceId} NX EX 1
-///     → Manual heartbeat loop every 200ms
-///     → Manual TTL renewal
-///     → Manual dead-leader detection polling
-///     → Manual epoch management via separate key
-///
-///   NATS JetStream KV approach:
-///     kv.CreateAsync("leader", instanceId)   // Atomic, fails if key exists
-///     → Key auto-expires after LeaderLockTtl (server-enforced)
-///     → Watch("leader") fires instantly on key deletion (leader died)
-///     → Epoch = KV sequence number (monotonically increasing, free)
-///
-/// Failover timeline remains identical: ~540ms end-to-end.
-/// 
-/// LAZY INITIALIZATION: KV bucket is created on first use, no explicit InitialiseAsync() needed.
+/// Key guarantees:
+///   - Only one instance can hold leadership at a time (KV CreateAsync atomicity)
+///   - Leadership renewal uses optimistic concurrency (UpdateAsync with revision check)
+///     so a paused-then-resumed ex-leader cannot silently overwrite a new leader
+///   - Self-demotion only occurs on confirmed loss (WrongLastRevision), not transient errors
+///   - Followers add random jitter before election attempt to reduce thundering herd
 /// </summary>
-public sealed class NatsLeaderElection(
-    NatsConnectionManager transport,
-    IOptions<NatsConnectionOptions> options,
-    ILogger<NatsLeaderElection> logger,
-    string streamName)
-    : ILeaderElection
+public sealed class NatsLeaderElection : ILeaderElection
 {
-    private readonly NatsConnectionOptions _options = options.Value;
+    private readonly NatsConnectionManager _transport;
+    private readonly IOptions<StreamlyRuntimeOptions> _runtimeOptions;
+    private readonly ISubjectResolver _subjectResolver;
+    private readonly NatsConnectionOptions _options;
+    private readonly ILogger<NatsLeaderElection> _logger;
+    private readonly string _streamName;
+    private readonly string _leaderKey;
 
     private NatsConnection? _nats;
     private INatsKVStore? _kvStore;
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _initialized;
 
+    // Tracks the KV revision of our current leadership entry.
+    // UpdateAsync requires the exact last revision — this is what prevents split-brain.
+    private ulong _leaderRevision;
+
     private volatile bool _isLeader;
     private int _currentEpoch;
     private CancellationTokenSource? _renewalCts;
     private CancellationTokenSource? _watchCts;
-    private readonly string _streamName = streamName ?? throw new ArgumentNullException(nameof(streamName)); // ← STORE IT
-
     private volatile bool _disposed;
+
+    // How many consecutive renewal failures before we self-demote.
+    // This prevents transient NATS hiccups from causing unnecessary leader churn.
+    private const int MaxConsecutiveRenewalFailures = 3;
+
     public bool IsLeader => _isLeader;
     public int CurrentEpoch => _currentEpoch;
-
     public event Action<int>? OnLeadershipChanged;
+
+    public NatsLeaderElection(
+        NatsConnectionManager transport,
+        IOptions<NatsConnectionOptions> options,
+        IOptions<StreamlyRuntimeOptions> runtimeOptions,
+        ISubjectResolver subjectResolver,
+        ILogger<NatsLeaderElection> logger,
+        string streamName)
+    {
+        _transport = transport;
+        _runtimeOptions = runtimeOptions;
+        _subjectResolver = subjectResolver;
+        _options = options.Value;
+        _logger = logger;
+        _streamName = streamName ?? throw new ArgumentNullException(nameof(streamName));
+        _leaderKey = $"leader.{_streamName}";
+    }
 
     // ── Lazy Initialisation ───────────────────────────────────────────────────
 
-    /// <summary>
-    /// Ensure KV store is initialized (lazy, thread-safe).
-    /// Called automatically on first use - no explicit InitialiseAsync() needed.
-    /// </summary>
     private async Task EnsureInitialisedAsync(CancellationToken ct = default)
     {
-        if (_initialized)
-            return;
+        if (_initialized) return;
 
         await _initLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_initialized)
-                return;
+            if (_initialized) return;
 
-            logger.LogDebug("Lazy-initializing NATS KV store for leader election");
+            _logger.LogDebug("Lazy-initializing NATS KV store for leader election (stream '{StreamName}')", _streamName);
 
-            // Access the underlying NatsConnection from the manager
             _nats = GetNatsConnection();
-
-            // Create KV context from the connection
             var kvContext = _nats.CreateKeyValueStoreContext();
 
             try
             {
-                // Try to get existing bucket first
                 _kvStore = await kvContext.GetStoreAsync(
-                    NatsSubjectNames.LeaderElectionBucket, 
+                    _subjectResolver.GetLeaderElectionBucketSubject(),
                     cancellationToken: ct).ConfigureAwait(false);
 
-                logger.LogDebug(
-                    "Using existing KV bucket '{Bucket}' for leader election",
-                    NatsSubjectNames.LeaderElectionBucket);
+                _logger.LogDebug("Using existing KV bucket '{Bucket}'", _subjectResolver.GetLeaderElectionBucketSubject());
             }
             catch (NatsKVException)
             {
-                // Bucket doesn't exist - create it
-                logger.LogInformation(
-                    "Creating KV bucket '{Bucket}' for leader election with TTL {Ttl}",
-                    NatsSubjectNames.LeaderElectionBucket,
+                _logger.LogInformation(
+                    "Creating KV bucket '{Bucket}' with TTL {Ttl}",
+                    _subjectResolver.GetLeaderElectionBucketSubject(),
                     _options.LeaderLockTtl);
 
                 _kvStore = await kvContext.CreateStoreAsync(
-                    new NatsKVConfig(NatsSubjectNames.LeaderElectionBucket)
+                    new NatsKVConfig(_subjectResolver.GetLeaderElectionBucketSubject())
                     {
-                        History = 1,                      // Only need the latest value
-                        MaxAge = _options.LeaderLockTtl,  // Server auto-deletes after TTL
-                        MaxBytes = 1024 * 1024,           // 1MB max
-                        Storage = NatsKVStorageType.Memory  // In-memory for speed
+                        History = 1,
+                        MaxAge = _options.LeaderLockTtl,
+                        MaxBytes = 1024 * 1024,
+                        Storage = NatsKVStorageType.Memory
                     }, ct).ConfigureAwait(false);
-
-                logger.LogInformation(
-                    "Created KV bucket '{Bucket}' successfully",
-                    NatsSubjectNames.LeaderElectionBucket);
             }
 
-            // Start watching for leader key changes in the background
             StartLeaderWatch();
-
             _initialized = true;
+
+            _logger.LogDebug("NATS KV leader election initialized for stream '{StreamName}'", _streamName);
         }
         finally
         {
@@ -131,30 +127,38 @@ public sealed class NatsLeaderElection(
     {
         await EnsureInitialisedAsync(ct).ConfigureAwait(false);
 
+        if (_isLeader)
+        {
+            _logger.LogDebug(
+                "TryAcquireLeadership called but already leader for stream '{StreamName}' — ignoring",
+                _streamName);
+            return true;
+        }
+        
         try
         {
-            // ✅ FIX: Use stream-specific key
-            var leaderKey = $"leader.{_streamName}";  // ← NOT just "leader"!
+            _logger.LogDebug(
+                "Attempting to acquire leadership for stream '{StreamName}' (key '{Key}')",
+                _streamName, _leaderKey);
 
-            logger.LogDebug(
-                "Attempting to acquire leadership for stream '{StreamName}' using key '{Key}'",
-                _streamName,
-                leaderKey);
-
-            await _kvStore!.CreateAsync(
-                leaderKey,  // ← Per-stream key: "leader.SpotPricer"
-                Encoding.UTF8.GetBytes(_options.InstanceId),
+            // CreateAsync is atomic: succeeds only if key does not exist.
+            // If another instance holds the key (even with 1ms left on TTL), this throws.
+            var revision = await _kvStore!.CreateAsync(
+                _leaderKey,
+                Encoding.UTF8.GetBytes(_runtimeOptions.Value.InstanceId),
                 cancellationToken: ct).ConfigureAwait(false);
 
-            // If we reach here, we are the new leader
+            // Store the revision — renewal MUST use this exact value to prove
+            // we are renewing our own entry, not overwriting someone else's.
+            _leaderRevision = revision;
+
             var newEpoch = Interlocked.Increment(ref _currentEpoch);
             _isLeader = true;
 
-            logger.LogInformation(
-                "Instance {InstanceId} acquired leadership for stream '{StreamName}' (epoch {Epoch})",
-                _options.InstanceId,
-                _streamName,
-                newEpoch);
+            _logger.LogInformation(
+                "Instance {InstanceId} acquired leadership for stream '{StreamName}' " +
+                "(epoch {Epoch}, revision {Revision})",
+                _runtimeOptions.Value.InstanceId, _streamName, newEpoch, revision);
 
             StartRenewalLoop();
             OnLeadershipChanged?.Invoke(newEpoch);
@@ -162,23 +166,21 @@ public sealed class NatsLeaderElection(
         }
         catch (NatsKVWrongLastRevisionException)
         {
-            logger.LogDebug(
-                "Failed to acquire leadership for stream '{StreamName}' - already held by another instance",
+            _logger.LogDebug(
+                "Leadership already held for stream '{StreamName}' (revision conflict)",
                 _streamName);
             return false;
         }
         catch (NatsKVCreateException)
         {
-            logger.LogDebug(
-                "Failed to acquire leadership for stream '{StreamName}' - key already exists",
+            _logger.LogDebug(
+                "Leadership already held for stream '{StreamName}' (key exists)",
                 _streamName);
             return false;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex,
-                "Error attempting to acquire leadership for stream '{StreamName}'",
-                _streamName);
+            _logger.LogError(ex, "Error attempting to acquire leadership for stream '{StreamName}'", _streamName);
             return false;
         }
     }
@@ -190,30 +192,31 @@ public sealed class NatsLeaderElection(
         if (!_isLeader)
             throw new InvalidOperationException("Cannot renew: this instance is not the leader.");
 
-        try
-        {
-            // ✅ Use stream-specific key
-            var leaderKey = $"leader.{_streamName}";
+        // UpdateAsync with the last known revision is the critical split-brain prevention.
+        //
+        // Scenario without this fix:
+        //   T+0:   Instance A is leader (revision 5)
+        //   T+500: A pauses (GC pause, network blip)
+        //   T+501: A's TTL expires, key deleted
+        //   T+502: Instance B wins election (revision 6)
+        //   T+503: A resumes, PutAsync overwrites B's entry → SPLIT BRAIN
+        //
+        // With UpdateAsync(revision: 5):
+        //   T+503: A calls UpdateAsync(revision=5), NATS rejects because current revision is 6
+        //   T+503: A receives WrongLastRevision, correctly self-demotes
+        //
+        var newRevision = await _kvStore!.UpdateAsync(
+            _leaderKey,
+            Encoding.UTF8.GetBytes(_runtimeOptions.Value.InstanceId),
+            _leaderRevision,  // Must match current server revision
+            cancellationToken: ct).ConfigureAwait(false);
 
-            await _kvStore!.PutAsync(
-                leaderKey,  // ← Same per-stream key
-                Encoding.UTF8.GetBytes(_options.InstanceId),
-                cancellationToken: ct).ConfigureAwait(false);
+        // Update our stored revision for the next renewal call
+        _leaderRevision = newRevision;
 
-            logger.LogTrace(
-                "Renewed leadership for stream '{StreamName}' (instance {InstanceId}, epoch {Epoch})",
-                _streamName,
-                _options.InstanceId,
-                _currentEpoch);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex,
-                "Failed to renew leadership for stream '{StreamName}' - assuming lost",
-                _streamName);
-            await HandleLeadershipLostAsync().ConfigureAwait(false);
-            throw;
-        }
+        _logger.LogTrace(
+            "Renewed leadership for stream '{StreamName}' (instance {InstanceId}, epoch {Epoch}, revision {Revision})",
+            _streamName, _runtimeOptions.Value.InstanceId, _currentEpoch, newRevision);
     }
 
     public async Task ReleaseLeadershipAsync(CancellationToken ct = default)
@@ -224,23 +227,16 @@ public sealed class NatsLeaderElection(
         {
             if (_kvStore != null)
             {
-                // ✅ Use stream-specific key
-                var leaderKey = $"leader.{_streamName}";
+                await _kvStore.DeleteAsync(_leaderKey, cancellationToken: ct).ConfigureAwait(false);
 
-                await _kvStore.DeleteAsync(
-                    leaderKey,  // ← Same per-stream key
-                    cancellationToken: ct).ConfigureAwait(false);
-
-                logger.LogInformation(
+                _logger.LogInformation(
                     "Instance {InstanceId} released leadership for stream '{StreamName}' (epoch {Epoch})",
-                    _options.InstanceId,
-                    _streamName,
-                    _currentEpoch);
+                    _runtimeOptions.Value.InstanceId, _streamName, _currentEpoch);
             }
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex,
+            _logger.LogWarning(ex,
                 "Error releasing leadership lock for stream '{StreamName}' (may have already expired)",
                 _streamName);
         }
@@ -250,40 +246,73 @@ public sealed class NatsLeaderElection(
         }
     }
 
-    // ── Background tasks ──────────────────────────────────────────────────────
+    // ── Background Tasks ──────────────────────────────────────────────────────
 
     private void StartRenewalLoop()
     {
         _renewalCts?.Cancel();
+        _renewalCts?.Dispose();
         _renewalCts = new CancellationTokenSource();
         var ct = _renewalCts.Token;
 
+        var capturedRevision = _leaderRevision;
+
         _ = Task.Run(async () =>
         {
-            logger.LogDebug(
-                "Leader renewal loop started (interval {Interval}ms)",
-                _options.LeaderHeartbeatInterval.TotalMilliseconds);
+            _logger.LogDebug(
+                "Renewal loop started for stream '{StreamName}' (revision '{Revision}') (interval {Interval}ms)",
+                _streamName, capturedRevision, _options.LeaderHeartbeatInterval.TotalMilliseconds);
+
+            var consecutiveFailures = 0;
 
             while (!ct.IsCancellationRequested && _isLeader)
             {
                 try
                 {
                     await Task.Delay(_options.LeaderHeartbeatInterval, ct).ConfigureAwait(false);
+                    
+                    if (ct.IsCancellationRequested) break; // ← check après le delay
+
                     await RenewLeadershipAsync(ct).ConfigureAwait(false);
+                    consecutiveFailures = 0; // Reset on success
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     break;
                 }
+                catch (NatsKVWrongLastRevisionException)
+                {
+                    // Another instance has taken over — this is definitive, not transient.
+                    // Self-demote immediately without waiting for more failures.
+                    _logger.LogWarning(
+                        "Revision conflict on renewal for stream '{StreamName}' — " +
+                        "another instance has taken leadership. Self-demoting.",
+                        _streamName);
+                    await HandleLeadershipLostAsync().ConfigureAwait(false);
+                    break;
+                }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Renewal loop encountered an error");
-                    // RenewLeadershipAsync already called HandleLeadershipLostAsync
-                    break;
+                    consecutiveFailures++;
+                    _logger.LogError(ex,
+                        "Renewal failure #{Count} for stream '{StreamName}'",
+                        consecutiveFailures, _streamName);
+
+                    // Only self-demote after sustained failures, not on a single transient error.
+                    // This avoids unnecessary leader churn from momentary NATS hiccups.
+                    if (consecutiveFailures >= MaxConsecutiveRenewalFailures)
+                    {
+                        _logger.LogWarning(
+                            "Exceeded {Max} consecutive renewal failures for stream '{StreamName}'. " +
+                            "Self-demoting to prevent stale leadership.",
+                            MaxConsecutiveRenewalFailures, _streamName);
+                        await HandleLeadershipLostAsync().ConfigureAwait(false);
+                        break;
+                    }
                 }
             }
 
-            logger.LogDebug("Leader renewal loop stopped");
+            _logger.LogDebug("Renewal loop stopped for stream '{StreamName}'", _streamName);
         }, ct);
     }
 
@@ -295,31 +324,32 @@ public sealed class NatsLeaderElection(
 
         _ = Task.Run(async () =>
         {
-            logger.LogDebug(
-                "Leader watch started for stream '{StreamName}' on KV bucket '{Bucket}'",
-                _streamName,
-                NatsSubjectNames.LeaderElectionBucket);
-
-            // ✅ Watch stream-specific key
-            var leaderKey = $"leader.{_streamName}";
+            _logger.LogDebug(
+                "Leader watch started for stream '{StreamName}' (key '{Key}')",
+                _streamName, _leaderKey);
 
             while (!ct.IsCancellationRequested)
             {
                 try
                 {
                     await foreach (var entry in _kvStore!
-                                       .WatchAsync<byte[]>(leaderKey, cancellationToken: ct)  // ← Watch per-stream key
+                                       .WatchAsync<byte[]>(_leaderKey, cancellationToken: ct)
                                        .ConfigureAwait(false))
                     {
                         if (entry.Operation is NatsKVOperation.Del or NatsKVOperation.Purge)
                         {
-                            logger.LogInformation(
-                                "Leader key deleted for stream '{StreamName}' (op={Op}), starting election",
-                                _streamName,
-                                entry.Operation);
+                            _logger.LogInformation(
+                                "Leader key deleted for stream '{StreamName}' (op={Op}), entering election",
+                                _streamName, entry.Operation);
 
                             if (!_isLeader)
                             {
+                                // Jitter prevents all followers from stampeding NATS simultaneously.
+                                // The window is small (0-50ms) — well within our failover budget.
+                                var jitterMs = Random.Shared.Next(0, 50);
+                                if (jitterMs > 0)
+                                    await Task.Delay(jitterMs, ct).ConfigureAwait(false);
+
                                 await TryAcquireLeadershipAsync(ct).ConfigureAwait(false);
                             }
                         }
@@ -329,16 +359,25 @@ public sealed class NatsLeaderElection(
                 {
                     break;
                 }
+                catch (NatsKVKeyNotFoundException)
+                {
+                    // Key doesn't exist yet — this is normal on startup before any leader has
+                    // been elected. Wait briefly and retry the watch.
+                    _logger.LogDebug(
+                        "Leader key '{Key}' not found for stream '{StreamName}', retrying watch in 500ms",
+                        _leaderKey, _streamName);
+                    await Task.Delay(500, ct).ConfigureAwait(false);
+                }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex,
+                    _logger.LogError(ex,
                         "Leader watch faulted for stream '{StreamName}', restarting in 1s",
                         _streamName);
                     await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
                 }
             }
 
-            logger.LogDebug("Leader watch stopped for stream '{StreamName}'", _streamName);
+            _logger.LogDebug("Leader watch stopped for stream '{StreamName}'", _streamName);
         }, ct);
     }
 
@@ -347,12 +386,13 @@ public sealed class NatsLeaderElection(
         if (!_isLeader) return Task.CompletedTask;
 
         _isLeader = false;
+        _leaderRevision = 0; // Reset so we don't accidentally use a stale revision
         _renewalCts?.Cancel();
 
         var epoch = _currentEpoch;
-        logger.LogWarning(
-            "Instance {InstanceId} lost leadership (epoch {Epoch})",
-            _options.InstanceId, epoch);
+        _logger.LogWarning(
+            "Instance {InstanceId} lost leadership for stream '{StreamName}' (epoch {Epoch})",
+            _runtimeOptions.Value.InstanceId, _streamName, epoch);
 
         OnLeadershipChanged?.Invoke(epoch);
         return Task.CompletedTask;
@@ -360,22 +400,16 @@ public sealed class NatsLeaderElection(
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Extract the underlying NatsConnection from the NatsConnectionManager.
-    /// We do this via a cast to an internal accessor interface to avoid making
-    /// NatsConnection public on the manager.
-    /// </summary>
     private NatsConnection GetNatsConnection()
     {
-        if (transport is INatsConnectionAccessor accessor)
+        if (_transport is INatsConnectionAccessor accessor)
             return accessor.NatsConnection;
 
-        // Fallback: use reflection (only for dev/test scenarios)
         var field = typeof(NatsConnectionManager)
             .GetField("_connection",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        var conn = field?.GetValue(transport) as NatsConnection;
+        var conn = field?.GetValue(_transport) as NatsConnection;
         return conn ?? throw new InvalidOperationException(
             "Unable to obtain NatsConnection from NatsConnectionManager. " +
             "Ensure ConnectAsync() was called before attempting leader election.");
@@ -392,8 +426,7 @@ public sealed class NatsLeaderElection(
         _watchCts?.Dispose();
         _initLock?.Dispose();
 
-        logger.LogDebug("NatsLeaderElection disposed");
-
+        _logger.LogDebug("NatsLeaderElection disposed for stream '{StreamName}'", _streamName);
         return ValueTask.CompletedTask;
     }
 }

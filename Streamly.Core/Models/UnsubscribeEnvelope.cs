@@ -22,6 +22,13 @@ public class UnsubscribeEnvelope
     public string StreamName { get; set; } = string.Empty;
     
     /// <summary>
+    /// InstanceId of the unsubscribing service.
+    /// Used by publisher to clean up subscriber lease.
+    /// </summary>
+    [JsonPropertyName("subscriberId")]
+    public string SubscriberId { get; set; } = string.Empty;
+    
+    /// <summary>
     /// When unsubscribe was requested (UTC)
     /// </summary>
     [JsonPropertyName("unsubscribedAt")]

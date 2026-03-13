@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Infrastructure.Nats;
 using Streamly.Infrastructure.Serialization;
@@ -26,6 +28,12 @@ public static class SubscriberServiceCollectionExtensions
         services.Configure<SubscriberOptions>(
             configuration.GetSection(SubscriberOptions.SectionName));
 
+        services.Configure<StreamlyRuntimeOptions>(
+            configuration.GetSection(StreamlyRuntimeOptions.SectionName));
+        
+        services.AddSingleton<IValidateOptions<StreamlyRuntimeOptions>,
+            StreamlyRuntimeOptionsValidator>();
+        
         // 2. Register NATS Infrastructure
         services.AddNatsSubscriberInfrastructure(configuration.GetSection("Streamly:Nats"));
         services.TryAddSingleton<ISubjectResolver, NatsSubjectResolver>();

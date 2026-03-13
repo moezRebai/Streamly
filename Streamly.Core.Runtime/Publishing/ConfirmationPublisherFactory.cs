@@ -18,10 +18,10 @@ internal class ConfirmationPublisherFactory(
     ILoggerFactory loggerFactory)
     : IConfirmationPublisherFactory
 {
-    public ConfirmationPublisher Create(string streamName)
+    public async Task<ConfirmationPublisher> CreateAsync(string streamName)
     {
         // Get the per-stream leader election instance
-        var leaderElection = leaderElectionFactory.GetOrCreate(streamName);
+        var leaderElection = await leaderElectionFactory.GetOrCreateAsync(streamName);
 
         return new ConfirmationPublisher(
             streamName,

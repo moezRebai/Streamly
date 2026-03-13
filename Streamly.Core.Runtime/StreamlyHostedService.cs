@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Streamly.Core.Runtime.Configuration;
+using Streamly.Core.Runtime.Publishing;
 using Streamly.Core.Runtime.RequestManagement;
 
 namespace Streamly.Core.Runtime;
@@ -19,7 +20,7 @@ internal class StreamlyHostedService(
 {
     // Holds the started managers for clean shutdown
     private readonly List<(string StreamName, object Manager)> _startedManagers = new();
-
+    private readonly List<KeepaliveService> _keepaliveServices = new();
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         logger.LogInformation(
@@ -38,10 +39,18 @@ internal class StreamlyHostedService(
 
                 // Call StartAsync via reflection (manager is a non-generic reference)
                 var startMethod = managerType.GetMethod(nameof(IRequestManager<object, object>.StartAsync))!;
-                await (Task)startMethod.Invoke(manager, new object[] { cancellationToken })!;
+                await (Task)startMethod.Invoke(manager, [cancellationToken])!;
 
                 _startedManagers.Add((handler.StreamName, manager));
 
+                // Start keepalive for this stream
+                var keepalive = await serviceProvider.GetRequiredService<KeepaliveServiceFactory>()
+                    .CreateAsync(handler.StreamName, cancellationToken);
+                
+                await keepalive.StartAsync(cancellationToken);
+                
+                _keepaliveServices.Add(keepalive);
+                
                 logger.LogInformation(
                     "Started RequestManager for stream '{StreamName}'",
                     handler.StreamName);
@@ -62,6 +71,17 @@ internal class StreamlyHostedService(
     {
         logger.LogInformation("Stopping Streamly...");
 
+        // Stop keepalives first — subscribers will detect silence
+        // and begin reconnecting before we close streams
+        foreach (var keepalive in _keepaliveServices)
+        {
+            try { await keepalive.StopAsync(); }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error stopping keepalive service");
+            }
+        }
+        
         // Stop in reverse order
         foreach (var (streamName, manager) in _startedManagers.AsEnumerable().Reverse())
         {
@@ -69,7 +89,7 @@ internal class StreamlyHostedService(
             {
                 var managerType = manager.GetType();
                 var stopMethod = managerType.GetMethod("StopAsync")!;
-                await (Task)stopMethod.Invoke(manager, new object[] { cancellationToken })!;
+                await (Task)stopMethod.Invoke(manager, [cancellationToken])!;
 
                 logger.LogInformation(
                     "Stopped RequestManager for stream '{StreamName}'",

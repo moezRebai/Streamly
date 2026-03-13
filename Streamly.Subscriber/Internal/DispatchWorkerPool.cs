@@ -130,7 +130,7 @@ internal class DispatchWorkerPool<TResponse> : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _logger.LogInformation("Stopping dispatch worker pool");
+        _logger.LogDebug("Stopping dispatch worker pool");
 
         // Signal all workers to stop
         await _cts.CancelAsync();
@@ -151,7 +151,7 @@ internal class DispatchWorkerPool<TResponse> : IAsyncDisposable
 
         _cts.Dispose();
 
-        _logger.LogInformation("Dispatch worker pool stopped");
+        _logger.LogDebug("Dispatch worker pool stopped");
     }
 }
 

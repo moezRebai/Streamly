@@ -1,8 +1,13 @@
 using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NATS.Client.Core;
+using NATS.Client.JetStream;
+using NATS.Client.KeyValueStore;
+using NATS.Net;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 
 namespace Streamly.Infrastructure.Nats;
 
@@ -17,6 +22,8 @@ namespace Streamly.Infrastructure.Nats;
 /// </summary>
 public sealed class NatsConnectionManager(
     IOptions<NatsConnectionOptions> options,
+    IOptions<StreamlyRuntimeOptions> runtimeOptions,
+    ISubjectResolver subjectResolver,
     ILogger<NatsConnectionManager> logger)
     : IStreamingTransport, INatsConnectionAccessor
 {
@@ -40,6 +47,67 @@ public sealed class NatsConnectionManager(
         _connection ?? throw new InvalidOperationException(
             "NATS not connected. Call ConnectAsync() first.");
 
+    /// <summary>
+    /// Ensures this InstanceId is not already taken by another running instance.
+    /// Uses NATS KV atomic CreateAsync — fails hard if key already exists.
+    /// TTL ensures the key expires naturally if process crashes.
+    /// </summary>
+    public async Task EnsureUniqueInstanceAsync(string instanceId, CancellationToken ct = default)
+    {
+        var nats = ((INatsConnectionAccessor)this).NatsConnection;
+        var kvContext = nats.CreateKeyValueStoreContext();
+
+        // Get or create the instances bucket
+        INatsKVStore kvStore;
+        try
+        {
+            kvStore = await kvContext.GetStoreAsync(
+                subjectResolver.GetInstancesBucketSubject(), ct).ConfigureAwait(false);
+        }
+        catch (NatsJSApiException)
+        {
+            kvStore = await kvContext.CreateStoreAsync(
+                new NatsKVConfig(subjectResolver.GetInstancesBucketSubject())
+                {
+                    History = 1,
+                    MaxAge = TimeSpan.FromSeconds(30), // auto-expires on crash
+                    Storage = NatsKVStorageType.Memory
+                }, ct).ConfigureAwait(false);
+        }
+
+        // Atomic check — only succeeds if key doesn't exist
+        try
+        {
+            await kvStore.CreateAsync(
+                instanceId,
+                Encoding.UTF8.GetBytes(Environment.MachineName),
+                cancellationToken: ct).ConfigureAwait(false);
+
+            logger.LogInformation(
+                "InstanceId '{InstanceId}' verified unique (machine: {Machine})",
+                instanceId, Environment.MachineName);
+        }
+        catch (NatsKVCreateException)
+        {
+            // Read existing to give helpful error
+            var existingMachine = "unknown";
+            try
+            {
+                var entry = await kvStore.GetEntryAsync<string>(instanceId, cancellationToken: ct);
+                existingMachine = entry.Value ?? "unknown";
+            }
+            catch
+            {
+                /* best effort */
+            }
+
+            throw new InvalidOperationException(
+                $"InstanceId '{instanceId}' is already in use by another instance " +
+                $"on machine '{existingMachine}'. " +
+                $"Change 'Streamly:InstanceId' in your configuration.");
+        }
+    }
+
     // ── Initialisation ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -55,7 +123,7 @@ public sealed class NatsConnectionManager(
                 return;
 
             logger.LogInformation("Connecting to NATS at {Url} as {InstanceId}",
-                _options.Url, _options.InstanceId);
+                _options.Url, runtimeOptions.Value.InstanceId);
 
             var opts = BuildNatsOpts();
             _connection = new NatsConnection(opts);
@@ -149,8 +217,8 @@ public sealed class NatsConnectionManager(
         try
         {
             await foreach (var msg in _connection!
-                .SubscribeAsync<byte[]>(subject, cancellationToken: ct)
-                .ConfigureAwait(false))
+                               .SubscribeAsync<byte[]>(subject, cancellationToken: ct)
+                               .ConfigureAwait(false))
             {
                 if (msg.Data is null)
                     continue;
@@ -188,7 +256,7 @@ public sealed class NatsConnectionManager(
             Url = _options.Url,
             Name = _options.ConnectionName,
             MaxReconnectRetry = _options.MaxReconnectAttempts,
-            ReconnectWaitMin = _options.ReconnectWait,          // Start delay
+            ReconnectWaitMin = _options.ReconnectWait, // Start delay
             ReconnectWaitMax = _options.ReconnectWait * 5,
         };
 
@@ -239,6 +307,7 @@ public sealed class NatsConnectionManager(
             cts.Cancel();
             cts.Dispose();
         }
+
         _subscriptions.Clear();
 
         if (_connection is not null)

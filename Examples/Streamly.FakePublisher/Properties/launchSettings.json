@@ -1,11 +1,22 @@
 ﻿{
   "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
-    "Streamly.Publisher": {
+    
+    "Publisher-Instance1": {
       "commandName": "Project",
-      "dotnetRunMessages": true,
       "environmentVariables": {
-        "DOTNET_ENVIRONMENT": "Development"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Streamly__ServiceName": "SpotPricer1-Instance1",
+        "Streamly__Nats__ConnectionName": "Streamly-Publisher-1"
+      }
+    },
+    
+    "Publisher-Instance2": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Streamly__ServiceName": "SpotPricer-Instance2",
+        "Streamly__Nats__ConnectionName": "Streamly-Publisher-2"
       }
     }
   }

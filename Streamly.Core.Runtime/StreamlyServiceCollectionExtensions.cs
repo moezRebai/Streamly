@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
 using Streamly.Core.ChangeDetection;
+using Streamly.Core.Configurations;
 using Streamly.Core.Runtime.Configuration;
 using Streamly.Core.Runtime.Context;
 using Streamly.Core.Runtime.Leadership;
@@ -50,6 +51,8 @@ public static class StreamlyServiceCollectionExtensions
         services.AddSingleton<IValidateOptions<StreamlyRuntimeOptions>,
             StreamlyRuntimeOptionsValidator>();
 
+        services.AddSingleton<KeepaliveServiceFactory>();
+        
         // 3. Register NATS Infrastructure
         services.AddNatsPublisherInfrastructure(configuration.GetSection("Streamly:Nats"));
         services.TryAddSingleton<ISubjectResolver, NatsSubjectResolver>();

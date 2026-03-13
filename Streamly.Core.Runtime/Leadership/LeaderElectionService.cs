@@ -17,8 +17,8 @@ public class LeaderElectionService : ILeaderElectionService
     private readonly string _instanceId;
     private readonly ILogger<LeaderElectionService> _logger;
     
-    private LeadershipState _state = LeadershipState.Follower;
-    private long _currentEpoch;
+    // Interlocked.Exchange assure l'atomicité des écritures dans OnInfrastructureLeadershipChanged.
+    private volatile int _state = (int)LeadershipState.Follower;
     private string? _currentLeaderId;
     private bool _disposed;
 
@@ -26,7 +26,7 @@ public class LeaderElectionService : ILeaderElectionService
 
     public string StreamName => _streamName;
     public string InstanceId => _instanceId;
-    public LeadershipState State => _state;
+    public LeadershipState State => (LeadershipState)_state;
     public bool IsLeader => _infrastructureLeaderElection.IsLeader;
     public long CurrentEpoch => _infrastructureLeaderElection.CurrentEpoch;
     public string? CurrentLeaderId => _currentLeaderId;
@@ -78,7 +78,7 @@ public class LeaderElectionService : ILeaderElectionService
         // Release leadership if we're the leader
         if (IsLeader)
         {
-            await ReleaseLeadershipAsync();
+            await ReleaseLeadershipAsync(cancellationToken);
         }
         
         _logger.LogInformation(
@@ -184,14 +184,14 @@ public class LeaderElectionService : ILeaderElectionService
 
     private void OnInfrastructureLeadershipChanged(int newEpoch)
     {
-        var previousState = _state;
+        var previousState = (LeadershipState)_state;
         var newState = IsLeader ? LeadershipState.Leader : LeadershipState.Follower;
-        
-        if (previousState == newState && _currentEpoch == newEpoch)
-            return; // No actual change
 
-        _state = newState;
-        _currentEpoch = newEpoch;
+        if (previousState == newState && CurrentEpoch == newEpoch)
+            return;
+
+        // Fix #3 : écriture atomique — visible immédiatement par tous les threads
+        Interlocked.Exchange(ref _state, (int)newState);
         _currentLeaderId = IsLeader ? _instanceId : null;
 
         _logger.LogInformation(
@@ -199,7 +199,7 @@ public class LeaderElectionService : ILeaderElectionService
             _streamName,
             previousState,
             newState,
-            _currentEpoch);
+            CurrentEpoch);
 
         // Raise Runtime-level event
         try
@@ -208,7 +208,7 @@ public class LeaderElectionService : ILeaderElectionService
                 previousState,
                 newState,
                 _streamName,
-                _currentEpoch,
+                CurrentEpoch,
                 _currentLeaderId);
 
             LeadershipChanged?.Invoke(this, eventArgs);

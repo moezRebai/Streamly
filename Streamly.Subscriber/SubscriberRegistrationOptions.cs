@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Subscriber.Configuration;
 using Streamly.Subscriber.Internal;
@@ -36,6 +37,7 @@ public class SubscriberRegistrationOptions
             var serializer = sp.GetRequiredService<IMessageSerializer>();
             var options = sp.GetRequiredService<IOptions<SubscriberOptions>>();
             var logger = sp.GetRequiredService<ILogger<SubscriptionManager<TRequest, TResponse>>>();
+            var runtimeOptions = sp.GetRequiredService<IOptions<StreamlyRuntimeOptions>>();
 
             return new SubscriptionManager<TRequest, TResponse>(
                 streamName,
@@ -43,6 +45,7 @@ public class SubscriberRegistrationOptions
                 subjects,
                 serializer,
                 options,
+                runtimeOptions,
                 logger);
         });
 
@@ -55,6 +58,7 @@ public class SubscriberRegistrationOptions
             var serializer = sp.GetRequiredService<IMessageSerializer>();
             var options = sp.GetRequiredService<IOptions<SubscriberOptions>>();
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var runtimeOptions = sp.GetRequiredService<IOptions<StreamlyRuntimeOptions>>();
 
             return new StreamingSubscriber<TRequest, TResponse>(
                 streamName,
@@ -63,6 +67,7 @@ public class SubscriberRegistrationOptions
                 transport,
                 subjects,
                 options,
+                runtimeOptions,
                 loggerFactory.CreateLogger<StreamingSubscriber<TRequest, TResponse>>());
         });
     }

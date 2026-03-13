@@ -1,22 +1,24 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Streamly.Core.Abstractions;
 using Streamly.Core.Runtime.Configuration;
 
 namespace Streamly.Core.Runtime.Leadership;
 
 /// <summary>
 /// Monitors leader heartbeats and attempts to acquire leadership if leader dies
-/// Internal component - managed by StreamLeadershipCoordinator
-/// 
-/// MIGRATION NOTE: No changes needed! LeaderMonitor doesn't use Redis directly.
-///                 It monitors LeaderElectionService events and the Infrastructure
-///                 layer handles heartbeat subscription internally.
 /// </summary>
-internal class LeaderMonitor : IAsyncDisposable
+internal class LeaderMonitor(
+    ILeaderElectionService leaderElection,
+    IOptions<LeaderElectionOptions> options,
+    ISubjectResolver subjects,
+    IStreamingTransport transport,
+    ILogger<LeaderMonitor> logger)
+    : IAsyncDisposable
 {
-    private readonly ILeaderElectionService _leaderElection;
-    private readonly LeaderElectionOptions _options;
-    private readonly ILogger<LeaderMonitor> _logger;
+    private readonly ILeaderElectionService _leaderElection = leaderElection ?? throw new ArgumentNullException(nameof(leaderElection));
+    private readonly LeaderElectionOptions _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+    private readonly ILogger<LeaderMonitor> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     
     private CancellationTokenSource? _runningCts;
     private Task? _monitorTask;
@@ -24,19 +26,6 @@ internal class LeaderMonitor : IAsyncDisposable
 
     // Track when we last received a heartbeat (updated by LeaderElectionService)
     private DateTime _lastHeartbeatReceived = DateTime.MinValue;
-
-    public LeaderMonitor(
-        ILeaderElectionService leaderElection,
-        IOptions<LeaderElectionOptions> options,
-        ILogger<LeaderMonitor> logger)
-    {
-        _leaderElection = leaderElection ?? throw new ArgumentNullException(nameof(leaderElection));
-        _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-        // Subscribe to leadership changes to track heartbeat received time
-        _leaderElection.LeadershipChanged += OnLeadershipChanged;
-    }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -50,6 +39,15 @@ internal class LeaderMonitor : IAsyncDisposable
             return;
         }
 
+        _lastHeartbeatReceived = DateTime.UtcNow;
+
+        // ✅ Souscrire aux heartbeats NATS Core
+        var heartbeatSubject = subjects.GetHeartbeatSubject(_leaderElection.StreamName);
+        await transport.SubscribeAsync(
+            heartbeatSubject,
+            OnHeartbeatReceivedAsync,
+            cancellationToken);
+        
         _logger.LogInformation(
             "Starting leader monitor for stream '{StreamName}'",
             _leaderElection.StreamName);
@@ -67,7 +65,7 @@ internal class LeaderMonitor : IAsyncDisposable
             "Stopping leader monitor for stream '{StreamName}'",
             _leaderElection.StreamName);
 
-        _runningCts.Cancel();
+        await _runningCts.CancelAsync();
 
         if (_monitorTask != null)
         {
@@ -94,18 +92,12 @@ internal class LeaderMonitor : IAsyncDisposable
 
     private async Task RunMonitorLoopAsync(CancellationToken cancellationToken)
     {
-        _logger.LogDebug(
-            "Leader monitor loop started for stream '{StreamName}'",
-            _leaderElection.StreamName);
-
-        // Check every 100ms (configurable, but typically much faster than heartbeat interval)
         var checkInterval = TimeSpan.FromMilliseconds(100);
 
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Only monitor if we're a follower
                 if (!_leaderElection.IsLeader)
                 {
                     try
@@ -123,36 +115,16 @@ internal class LeaderMonitor : IAsyncDisposable
                 await Task.Delay(checkInterval, cancellationToken);
             }
         }
-        catch (OperationCanceledException)
-        {
-            _logger.LogDebug(
-                "Leader monitor loop cancelled for stream '{StreamName}'",
-                _leaderElection.StreamName);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "Unexpected error in leader monitor loop for stream '{StreamName}'",
-                _leaderElection.StreamName);
-        }
+        catch (OperationCanceledException) { }
     }
 
     private async Task CheckLeaderHealthAsync(CancellationToken cancellationToken)
     {
         var timeSinceLastHeartbeat = DateTime.UtcNow - _lastHeartbeatReceived;
 
-        // If we've never received a heartbeat, try to acquire immediately
-        if (_lastHeartbeatReceived == DateTime.MinValue)
-        {
-            _logger.LogDebug(
-                "No heartbeat received yet for stream '{StreamName}', attempting to acquire leadership",
-                _leaderElection.StreamName);
-
-            await _leaderElection.TryAcquireLeadershipAsync(cancellationToken);
-            return;
-        }
-
         // Check if leader appears dead (no heartbeat for DeadThreshold duration)
+        // _lastHeartbeatReceived est initialisé à UtcNow dans StartAsync,
+        // donc cette condition ne se déclenche qu'après DeadThreshold réel.
         if (timeSinceLastHeartbeat > _options.DeadThreshold)
         {
             _logger.LogWarning(
@@ -171,25 +143,22 @@ internal class LeaderMonitor : IAsyncDisposable
         }
     }
 
-    private void OnLeadershipChanged(object? sender, LeadershipChangedEventArgs e)
+    private Task OnHeartbeatReceivedAsync(byte[] data)
     {
-        // When we receive notification of any leadership change, update heartbeat time
-        // This prevents false positives when we first start or when leadership changes
         _lastHeartbeatReceived = DateTime.UtcNow;
 
-        _logger.LogDebug(
-            "Leadership changed for stream '{StreamName}', resetting heartbeat timer",
+        _logger.LogTrace("Heartbeat received for stream '{StreamName}'",
             _leaderElection.StreamName);
-    }
 
+        return Task.CompletedTask;
+    }
+    
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
             return;
 
         _disposed = true;
-        
-        _leaderElection.LeadershipChanged -= OnLeadershipChanged;
         
         await StopAsync();
     }

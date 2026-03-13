@@ -13,7 +13,7 @@ public class StreamlyOptions
     /// <summary>
     /// Register a streaming handler
     /// </summary>
-    public StreamlyOptions AddHandler<TRequest, TResponse, THandler>(string streamName)
+    public void AddHandler<TRequest, TResponse, THandler>(string streamName)
         where THandler : class, IStreamingRequestHandler<TRequest, TResponse>
     {
         if (string.IsNullOrWhiteSpace(streamName))
@@ -24,7 +24,5 @@ public class StreamlyOptions
             typeof(TResponse),
             typeof(THandler),
             streamName));
-        
-        return this;
     }
 }

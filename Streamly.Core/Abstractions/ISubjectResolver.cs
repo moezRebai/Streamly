@@ -70,4 +70,12 @@ public interface ISubjectResolver
     /// </summary>
     /// <param name="streamName">Stream identifier</param>
     string GetConfirmSubject(string streamName);
+
+    public string GetInstancesBucketSubject();
+
+    public string GetLeaderElectionBucketSubject();
+    
+    // Global — one subject for all subscriber heartbeats, not per-stream
+    // A subscriber is either alive or dead, not per-stream
+    public string GetSubscriberHeartbeatSubject();
 }

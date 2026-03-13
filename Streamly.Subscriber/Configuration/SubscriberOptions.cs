@@ -53,6 +53,13 @@ public class SubscriberOptions
     /// Default: 2000ms
     /// </summary>
     public TimeSpan HeartbeatTimeout { get; set; } = TimeSpan.FromMilliseconds(2000);
+    
+    /// <summary>
+    /// How often the subscriber sends a heartbeat to the publisher.
+    /// Publisher timeout is 10s — sending every 3s gives 3x safety margin.
+    /// Default: 3s
+    /// </summary>
+    public int HeartbeatIntervalMs { get; set; } = 3000;
 }
 
 

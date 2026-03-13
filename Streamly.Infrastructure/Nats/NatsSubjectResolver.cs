@@ -42,4 +42,16 @@ public sealed class NatsSubjectResolver : ISubjectResolver
 
     public string GetConfirmSubject(string streamName)
         => $"streams.confirm.{streamName}";
+
+
+    public string GetInstancesBucketSubject()
+        => "streamly-instances";
+
+    public string GetLeaderElectionBucketSubject()
+        => "streamly-leader";
+    
+    // Global — one subject for all subscriber heartbeats, not per-stream
+// A subscriber is either alive or dead, not per-stream
+    public string GetSubscriberHeartbeatSubject()
+        => "streams.subscriber-heartbeat";
 }

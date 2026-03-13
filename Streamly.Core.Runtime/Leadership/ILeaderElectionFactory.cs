@@ -9,5 +9,5 @@ public interface ILeaderElectionFactory
     /// Get or create a leader election service for a stream
     /// Thread-safe, returns same instance for same stream name
     /// </summary>
-    ILeaderElectionService GetOrCreate(string streamName);
+    Task<ILeaderElectionService> GetOrCreateAsync(string streamName , CancellationToken cancellationToken = default);
 }

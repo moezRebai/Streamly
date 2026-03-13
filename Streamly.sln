@@ -14,6 +14,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.FakePublisher", "E
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.FakeSubscriber", "Examples\Streamly.FakeSubscriber\Streamly.FakeSubscriber.csproj", "{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Benchmarks", "Streamly.Benchmarks\Streamly.Benchmarks.csproj", "{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.LoadTests", "Streamly.LoadTests\Streamly.LoadTests.csproj", "{F81E4442-5650-4921-B7DD-C9D62DCED0AB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -44,6 +48,14 @@ Global
 		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D6D5BAB4-8990-4D7F-9DB0-1BD5EB103190}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F81E4442-5650-4921-B7DD-C9D62DCED0AB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F81E4442-5650-4921-B7DD-C9D62DCED0AB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F81E4442-5650-4921-B7DD-C9D62DCED0AB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F81E4442-5650-4921-B7DD-C9D62DCED0AB}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{EA972F17-6584-43C3-8EAC-3CE29F57D073} = {712C8C2E-EBE6-4CC8-8C1D-F9368E70F841}

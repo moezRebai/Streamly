@@ -1,4 +1,3 @@
-using System;
 using System.ComponentModel.DataAnnotations;
 
 namespace Streamly.Infrastructure.Nats;
@@ -18,13 +17,7 @@ public sealed class NatsConnectionOptions
     [Required]
     public string Url { get; set; } = "nats://localhost:4222";
 
-    /// <summary>
-    /// Logical name for this service instance (used as leader election candidate ID).
-    /// Defaults to machine name + process ID for uniqueness.
-    /// </summary>
-    public string InstanceId { get; set; } =
-        $"{Environment.MachineName}-{Environment.ProcessId}";
-
+  
     /// <summary>
     /// Name passed to NATS server for connection identification (visible in monitoring).
     /// </summary>
@@ -61,9 +54,9 @@ public sealed class NatsConnectionOptions
     /// <summary>
     /// TTL for the leader lock in the JetStream KV bucket.
     /// Must be greater than the heartbeat interval.
-    /// Default: 1 second (matches Redis implementation).
+    /// Default: 2 second.
     /// </summary>
-    public TimeSpan LeaderLockTtl { get; set; } = TimeSpan.FromSeconds(1);
+    public TimeSpan LeaderLockTtl { get; set; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// How often the leader renews its lock.
@@ -75,11 +68,11 @@ public sealed class NatsConnectionOptions
     /// How long a follower waits without a leader heartbeat before triggering election.
     /// Default: 500ms.
     /// </summary>
-    public TimeSpan LeaderDeadThreshold { get; set; } = TimeSpan.FromMilliseconds(500);
+    public TimeSpan LeaderDeadThreshold { get; set; } = TimeSpan.FromMilliseconds(1000);
 
     /// <summary>
     /// How often followers poll for leadership availability.
     /// Default: 100ms.
     /// </summary>
-    public TimeSpan FollowerCheckInterval { get; set; } = TimeSpan.FromMilliseconds(100);
+    public TimeSpan FollowerCheckInterval { get; set; } = TimeSpan.FromMilliseconds(200);
 }

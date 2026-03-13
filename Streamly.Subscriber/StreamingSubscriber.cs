@@ -1,10 +1,8 @@
 using System.Reactive.Linq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NATS.Client.Core;
-using Polly;
-using Polly.Retry;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 using Streamly.Core.Models;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Subscriber.Configuration;
@@ -12,7 +10,6 @@ using Streamly.Subscriber.Internal;
 using Streamly.Subscriber.Models;
 
 namespace Streamly.Subscriber;
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FILE: Streamly.Subscriber/StreamingSubscriber.cs
@@ -33,8 +30,8 @@ internal class StreamingSubscriber<TRequest, TResponse>
     private readonly IStreamingTransport _transport;
     private readonly ISubjectResolver _subjects;
     private readonly string _streamName;
-    private readonly ResiliencePipeline _reconnectPolicy;
     private bool _disposed;
+    private readonly StreamlyRuntimeOptions _runtimeOptions;
 
     public StreamingSubscriber(
         string streamName,
@@ -43,6 +40,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
         IStreamingTransport transport,
         ISubjectResolver subjects,
         IOptions<SubscriberOptions> options,
+        IOptions<StreamlyRuntimeOptions> runtimeOptions,
         ILogger<StreamingSubscriber<TRequest, TResponse>> logger)
     {
         if (string.IsNullOrWhiteSpace(streamName))
@@ -51,11 +49,11 @@ internal class StreamingSubscriber<TRequest, TResponse>
         _subscriptionManager = subscriptionManager ?? throw new ArgumentNullException(nameof(subscriptionManager));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
+        _runtimeOptions = runtimeOptions.Value ?? throw new ArgumentNullException(nameof(runtimeOptions));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _streamName = streamName;
-        _reconnectPolicy = BuildReconnectPolicy();
     }
 
     public IObservable<TResponse> Subscribe(
@@ -67,30 +65,88 @@ internal class StreamingSubscriber<TRequest, TResponse>
 
         return Observable.Create<TResponse>(async (observer, cancellationToken) =>
         {
-            var attempt = 0;
+            var cycleAttempt = 0;
 
-            await _reconnectPolicy.ExecuteAsync(async ct =>
+            while (!cancellationToken.IsCancellationRequested)
             {
-                attempt++;
+                cycleAttempt++;
 
-                // Notify reconnecting (skip first attempt - that's not a reconnect)
-                if (attempt > 1)
+                // Log reconnect attempts (not the first connection)
+                if (cycleAttempt > 1)
                 {
                     _logger.LogInformation(
                         "Reconnect attempt {Attempt}/{Max} for '{StreamName}'",
-                        attempt, _options.MaxReconnectAttempts, _streamName);
+                        cycleAttempt, _options.MaxReconnectAttempts, _streamName);
                 }
 
-                await DoSubscribeAsync(request, behavior, observer, onStatusChanged, ct);
-
-                // If we get here after a retry, notify restored
-                if (attempt > 1)
+                // All retries exhausted
+                if (cycleAttempt > _options.MaxReconnectAttempts)
                 {
-                    _subscriptionManager.NotifyRestored();
-                    onStatusChanged?.Invoke(StreamStatus.Active(_streamName));
+                    var ex = new PublisherUnavailableException(
+                        $"All {_options.MaxReconnectAttempts} reconnect attempts exhausted for '{_streamName}'");
+
+                    _logger.LogError(ex,
+                        "Stream permanently lost for '{StreamName}' after {Max} attempts",
+                        _streamName, _options.MaxReconnectAttempts);
+
+                    onStatusChanged?.Invoke(
+                        StreamStatus.Failed(_streamName, _options.MaxReconnectAttempts, ex));
+
+                    observer.OnError(ex);
+                    break;
                 }
 
-            }, cancellationToken);
+                try
+                {
+                    await DoSubscribeAsync(
+                        request, behavior, observer, onStatusChanged,
+                        isReconnect: cycleAttempt > 1,
+                        cancellationToken);
+
+                    // DoSubscribeAsync returned cleanly = stream ended normally
+                    // (publisher sent OnCompleted / unsubscribe)
+                    _logger.LogInformation("Stream ended normally for '{StreamName}'", _streamName);
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    // User disposed the subscription — stop everything
+                    _logger.LogInformation("Subscription cancelled for '{StreamName}'", _streamName);
+                    break;
+                }
+                catch (PublisherUnavailableException ex)
+                {
+                    // Was confirmed and connected, then publisher died
+                    // → reset counter because we proved the system works
+                    _logger.LogWarning("Publisher lost on '{StreamName}' after successful connection, " +
+                        "resetting retry counter",
+                        _streamName);
+
+                    cycleAttempt = 0; // next iteration = attempt 1
+                    
+                    var delay = CalculateDelay(1);
+                    await SafeDelay(delay, cancellationToken);
+                }
+                catch (TimeoutException ex)
+                {
+                    // Never got confirmation — publisher not ready yet
+                    // → keep incrementing, apply backoff
+                    _logger.LogWarning("No confirmation for '{StreamName}' (attempt {Attempt}/{Max}), " +
+                        "retrying in {Delay:F1}s",
+                        _streamName, cycleAttempt, _options.MaxReconnectAttempts, CalculateDelay(cycleAttempt).TotalSeconds);
+
+                    await SafeDelay(CalculateDelay(cycleAttempt), cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    // Unexpected error — treat like timeout, keep counting
+                    _logger.LogError(ex,
+                        "Unexpected error on '{StreamName}' (attempt {Attempt}/{Max})",
+                        _streamName, cycleAttempt, _options.MaxReconnectAttempts);
+
+                    await SafeDelay(CalculateDelay(cycleAttempt), cancellationToken);
+                }
+            }
         });
     }
 
@@ -99,9 +155,14 @@ internal class StreamingSubscriber<TRequest, TResponse>
         StreamBehavior behavior,
         IObserver<TResponse> observer,
         Action<StreamStatus>? onStatusChanged,
+        bool isReconnect,
         CancellationToken cancellationToken)
     {
         var correlationId = Guid.NewGuid().ToString("N");
+
+        // Per-attempt CTS — watchdog cancels this to wake up tcs.Task
+        // Linked to cancellationToken so user dispose also cancels it
+        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         var state = new SubscriptionState<TResponse>
         {
@@ -115,51 +176,106 @@ internal class StreamingSubscriber<TRequest, TResponse>
             onError: observer.OnError,
             onCompleted: observer.OnCompleted);
 
-        await _subscriptionManager.RegisterPendingAsync(state, cancellationToken);
+        // Register with manager — sets up confirm/response transport subscriptions
+        // and gives watchdog the attemptCts to cancel when heartbeat times out
+        await _subscriptionManager.RegisterPendingAsync(state, attemptCts, cancellationToken);
 
-        var envelope = new RequestEnvelope<TRequest>
+        try
         {
-            Request = request,
-            Behavior = behavior,
-            CorrelationId = correlationId,
-            SubscribedAt = DateTime.UtcNow
-        };
+            // Step 1 — publish request to publisher
+            var envelope = new RequestEnvelope<TRequest>
+            {
+                Request = request,
+                Behavior = behavior,
+                SubscriberId = _runtimeOptions.InstanceId,
+                CorrelationId = correlationId,
+                SubscribedAt = DateTime.UtcNow
+            };
 
-        var data = _serializer.Serialize(envelope);
-        var requestsSubject = _subjects.GetRequestsSubject(_streamName);
-        await _transport.PublishAsync(requestsSubject, data, cancellationToken);
+            var data = _serializer.Serialize(envelope);
+            var requestsSubject = _subjects.GetRequestsSubject(_streamName);
+            await _transport.PublishAsync(requestsSubject, data, cancellationToken);
 
-        _logger.LogDebug(
-            "Published {Behavior} request to '{Channel}' (correlationId: {CorrelationId})",
-            behavior, requestsSubject, correlationId);
+            _logger.LogDebug(
+                "Published {Behavior} request to '{Subject}' (correlationId: {CorrelationId})",
+                behavior, requestsSubject, correlationId);
 
-        var confirmed = await WaitForConfirmationAsync(state, cancellationToken);
+            // Step 2 — wait for publisher confirmation
+            // TimeoutException thrown here if no confirmation within ConfirmationTimeout
+            var confirmed = await WaitForConfirmationAsync(state, cancellationToken);
 
-        if (!confirmed)
-        {
-            await _subscriptionManager.UnregisterAsync(state, cancellationToken);
-            throw new TimeoutException(
-                $"No confirmation within {_options.ConfirmationTimeout.TotalSeconds}s for '{_streamName}'");
+            if (!confirmed)
+                throw new TimeoutException(
+                    $"No confirmation within {_options.ConfirmationTimeout.TotalSeconds}s " +
+                    $"for '{_streamName}'");
+
+            // Step 3 — confirmed, stream is now active
+            // Notify restored only if this was a reconnect attempt
+            if (isReconnect)
+            {
+                _subscriptionManager.NotifyRestored();
+                onStatusChanged?.Invoke(StreamStatus.Active(_streamName));
+            }
+
+            _logger.LogInformation(
+                "Stream active: RequestId '{RequestId}' on '{StreamName}'",
+                state.RequestId, _streamName);
+
+            // Step 4 — wait here for the duration of the connection lifetime
+            // Exits when: stream ends normally, stream errors, or watchdog fires
+            var tcs = new TaskCompletionSource();
+
+            using var completionSub = state.Subject.Subscribe(
+                onNext: _ => { },
+                onError: _ => tcs.TrySetResult(),
+                onCompleted: () => tcs.TrySetResult());
+
+            // attemptCts cancelled by watchdog → wakes up tcs.Task
+            await using var cancelReg = attemptCts.Token.Register(() => tcs.TrySetResult());
+
+            await tcs.Task;
+
+            // Step 5 — tcs.Task completed, determine why
+            if (attemptCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                // Watchdog fired — publisher died after successful connection
+                // → throw PublisherUnavailableException so Subscribe() resets counter
+                throw new PublisherUnavailableException(
+                    $"Publisher heartbeat lost on '{_streamName}'");
+            }
+
+            // cancellationToken cancelled (user disposed) or stream ended normally
+            // → return cleanly, Subscribe() will break the while loop
         }
+        finally
+        {
+            // Always CancellationToken.None — both tokens may be cancelled at this point
+            // Must complete cleanup regardless to avoid corrupt SubscriptionManager state
+            await _subscriptionManager.UnregisterAsync(state, CancellationToken.None);
+        }
+    }
 
-        _logger.LogInformation(
-            "Stream active: RequestId '{RequestId}' on '{StreamName}'",
-            state.RequestId, _streamName);
+    private TimeSpan CalculateDelay(int attempt)
+    {
+        // Constant delay with small jitter to avoid thundering herd
+        var jitter = Random.Shared.NextDouble() * 0.4 - 0.2; // ±20%
+        return TimeSpan.FromMilliseconds(
+            _options.ReconnectInitialDelay.TotalMilliseconds * (1 + jitter));
+    }
 
-        // Keep alive until cancelled or stream ends
-        var tcs = new TaskCompletionSource();
-
-        using var completionSub = state.Subject.Subscribe(
-            onNext: _ => { },
-            onError: _ => tcs.TrySetResult(),
-            onCompleted: () => tcs.TrySetResult());
-
-        await using var cancelReg = cancellationToken.Register(() => tcs.TrySetResult());
-
-        await tcs.Task;
-
-        if (!state.IsDisposed)
-            await _subscriptionManager.UnregisterAsync(state, cancellationToken);
+    private static async Task SafeDelay(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        // Swallows OperationCanceledException so the while loop
+        // can check cancellationToken.IsCancellationRequested cleanly
+        // instead of throwing out of the catch block
+        try
+        {
+            await Task.Delay(delay, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // Let the while condition handle it on next iteration
+        }
     }
 
     private async Task<bool> WaitForConfirmationAsync(
@@ -180,39 +296,6 @@ internal class StreamingSubscriber<TRequest, TResponse>
         {
             return false;
         }
-    }
-
-    private ResiliencePipeline BuildReconnectPolicy()
-    {
-        return new ResiliencePipelineBuilder()
-            .AddRetry(new RetryStrategyOptions
-            {
-                ShouldHandle = new PredicateBuilder()
-                    .Handle<TimeoutException>()
-                    .Handle<PublisherUnavailableException>()
-                    .Handle<NatsServerException>() 
-                    .Handle<Exception>(ex => ex is not OperationCanceledException),
-
-                MaxRetryAttempts = _options.MaxReconnectAttempts,
-                BackoffType = DelayBackoffType.Exponential,
-                Delay = _options.ReconnectInitialDelay,
-                MaxDelay = _options.ReconnectMaxDelay,
-                UseJitter = true,
-
-                OnRetry = args =>
-                {
-                    _logger.LogWarning(
-                        "Reconnect attempt {Attempt}/{Max} for '{StreamName}' in {Delay:F1}s - {Reason}",
-                        args.AttemptNumber + 1,
-                        _options.MaxReconnectAttempts,
-                        _streamName,
-                        args.RetryDelay.TotalSeconds,
-                        args.Outcome.Exception?.Message);
-
-                    return ValueTask.CompletedTask;
-                }
-            })
-            .Build();
     }
 
     public async ValueTask DisposeAsync()

@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 using Streamly.Core.Models;
-using Streamly.Core.Runtime.Configuration;
 using Streamly.Core.Runtime.Leadership;
 using Streamly.Core.Runtime.Registration;
 using Streamly.Core.Runtime.RequestManagement;
@@ -20,7 +20,10 @@ namespace Streamly.Core.Runtime.Publishing;
 /// </summary>
 internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequest, TResponse>
 {
-    private readonly ILeaderElectionService _leaderElection;
+    private readonly ILeaderElectionFactory _leaderElectionFactory;
+    private ILeaderElectionService _leaderElection = null!; // initialisé au premier appel
+    private readonly SemaphoreSlim _initLock = new(1, 1);
+    private bool _initialized;
     private readonly IRequestRegistry<TRequest, TResponse> _registry;
     private readonly IResponseChangeDetector<TResponse> _changeDetector;
     private readonly IStreamingTransport _transport;
@@ -50,11 +53,34 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _instanceId = runtimeOptions.Value.InstanceId ?? throw new ArgumentNullException(nameof(runtimeOptions));
 
-        // Get stream name from registry
         _streamName = streamRegistry.GetStreamName<TRequest>();
 
-        // Get leader election service for this stream
-        _leaderElection = leaderElectionFactory.GetOrCreate(_streamName);
+        // Stocker la factory — GetOrCreateAsync sera appelé dans InitializeAsync
+        _leaderElectionFactory = leaderElectionFactory
+            ?? throw new ArgumentNullException(nameof(leaderElectionFactory));
+    }
+
+    /// <summary>
+    /// Initialisation lazy — appelé automatiquement au premier PublishAsync/CloseAsync.
+    /// Thread-safe via SemaphoreSlim : plusieurs handlers peuvent publier en parallèle,
+    /// seul le premier thread initialise, les autres attendent puis continuent.
+    /// </summary>
+    private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
+    {
+        if (_initialized) return; // fast path sans lock
+
+        await _initLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_initialized) return; // double-check après acquisition
+            _leaderElection = await _leaderElectionFactory.GetOrCreateAsync(
+                _streamName, cancellationToken);
+            _initialized = true;
+        }
+        finally
+        {
+            _initLock.Release();
+        }
     }
 
     public async Task PublishAsync(
@@ -66,6 +92,8 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
         if (string.IsNullOrWhiteSpace(requestId))
             throw new ArgumentException("Request ID cannot be null or whitespace", nameof(requestId));
         ArgumentNullException.ThrowIfNull(response);
+
+        await EnsureInitializedAsync(cancellationToken);
 
         // Step 1: Check leadership
         if (!_leaderElection.IsLeader)
@@ -168,6 +196,8 @@ internal class ResponsePublisher<TRequest, TResponse> : IResponsePublisher<TRequ
     {
         if (string.IsNullOrWhiteSpace(requestId))
             throw new ArgumentException("Request ID cannot be null or whitespace", nameof(requestId));
+
+        await EnsureInitializedAsync(cancellationToken);
 
         // Check leadership
         if (!_leaderElection.IsLeader)

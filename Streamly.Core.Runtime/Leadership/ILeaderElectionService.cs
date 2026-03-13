@@ -51,19 +51,6 @@ public interface ILeaderElectionService : IDisposable
     Task<bool> TryAcquireLeadershipAsync(CancellationToken cancellationToken = default);
     
     /// <summary>
-    /// Renew leadership lock (heartbeat to Redis)
-    /// Called periodically by leader to maintain lock
-    /// </summary>
-    /// <returns>True if renewal successful, false if lost leadership</returns>
-    Task<bool> RenewLeadershipAsync(CancellationToken cancellationToken = default);
-    
-    /// <summary>
-    /// Explicitly release leadership
-    /// Called during graceful shutdown
-    /// </summary>
-    Task ReleaseLeadershipAsync(CancellationToken cancellationToken = default);
-    
-    /// <summary>
     /// Start leader election service
     /// Begins monitoring for leadership opportunities
     /// </summary>

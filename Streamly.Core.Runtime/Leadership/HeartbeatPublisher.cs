@@ -9,16 +9,12 @@ namespace Streamly.Core.Runtime.Leadership;
 /// <summary>
 /// Publishes heartbeat messages when instance is leader
 /// Internal component - managed by StreamLeadershipCoordinator
-/// 
-/// MIGRATION NOTE: Replaced IRedisConnectionManager → IStreamingTransport
-///                 Replaced IChannelNameResolver → ISubjectResolver
 /// </summary>
 internal class HeartbeatPublisher : IAsyncDisposable
 {
     private readonly ILeaderElectionService _leaderElection;
     private readonly IStreamingTransport _transport;
     private readonly IMessageSerializer _serializer;
-    private readonly ISubjectResolver _subjects;
     private readonly LeaderElectionOptions _options;
     private readonly ILogger<HeartbeatPublisher> _logger;
     
@@ -26,6 +22,11 @@ internal class HeartbeatPublisher : IAsyncDisposable
     private CancellationTokenSource? _runningCts;
     private Task? _publishTask;
     private bool _disposed;
+
+    // flag atomique — 0 = not started, 1 = started
+    // Interlocked.CompareExchange garantit qu'un seul thread démarre la loop
+    // même si StartAsync est appelé simultanément depuis plusieurs threads.
+    private int _started;
 
     public HeartbeatPublisher(
         ILeaderElectionService leaderElection,
@@ -38,16 +39,16 @@ internal class HeartbeatPublisher : IAsyncDisposable
         _leaderElection = leaderElection ?? throw new ArgumentNullException(nameof(leaderElection));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-        _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-        _heartbeatSubject = _subjects.GetHeartbeatSubject(_leaderElection.StreamName);
+        _heartbeatSubject = subjects.GetHeartbeatSubject(_leaderElection.StreamName);
     }
 
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
-        if (_runningCts != null)
+        // Fix #4 : CAS atomique — un seul thread démarre la loop, les autres retournent
+        if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
         {
             _logger.LogWarning(
                 "HeartbeatPublisher already started for stream '{StreamName}'",
@@ -115,16 +116,6 @@ internal class HeartbeatPublisher : IAsyncDisposable
                     {
                         // Publish heartbeat
                         await PublishHeartbeatAsync(cancellationToken);
-
-                        // Renew leadership lock
-                        var renewed = await _leaderElection.RenewLeadershipAsync(cancellationToken);
-                        
-                        if (!renewed)
-                        {
-                            _logger.LogWarning(
-                                "Failed to renew leadership for stream '{StreamName}', lost leadership",
-                                _leaderElection.StreamName);
-                        }
                     }
                     catch (Exception ex)
                     {

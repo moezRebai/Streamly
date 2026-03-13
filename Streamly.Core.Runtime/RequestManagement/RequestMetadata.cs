@@ -21,7 +21,7 @@ internal class RequestMetadata<TRequest, TResponse>
     /// <summary>
     /// Serialized request (for batch sync recovery)
     /// </summary>
-    public byte[] SerializedRequest { get; set; } = Array.Empty<byte>();
+    public byte[] SerializedRequest { get; set; } = [];
     
     /// <summary>
     /// Current state of the request
@@ -58,4 +58,9 @@ internal class RequestMetadata<TRequest, TResponse>
     /// Used for fencing stale updates
     /// </summary>
     public long Epoch { get; set; }
+    
+    /// <summary>
+    /// Cancelled when request closes — stops the handler loop.
+    /// </summary>
+    public CancellationTokenSource HandlerCts { get; } = new();
 }

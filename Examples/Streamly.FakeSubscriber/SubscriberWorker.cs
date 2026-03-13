@@ -20,6 +20,7 @@ public class SubscriberWorker(
     {
         logger.LogInformation("Starting subscriber test - two clients");
 
+        var index = 0;
         // ── Client A: EUR/USD ────────────────────────────────────────────────
         _clientA = subscriber
             .Subscribe(
@@ -50,9 +51,13 @@ public class SubscriberWorker(
                 })
             .Subscribe(
                 onNext: price =>
+                {
                     logger.LogInformation(
                         "[Client A] EUR/USD → Bid: {Bid:F5}  Ask: {Ask:F5}  @ {Time:HH:mm:ss.fff}",
-                        price.Bid, price.Ask, price.Timestamp),
+                        price.Bid, price.Ask, price.Timestamp);
+                    index++;
+                },
+                    
                 onError: ex =>
                     logger.LogError(ex, "[Client A] EUR/USD permanently failed"),
                 onCompleted: () =>
@@ -61,7 +66,7 @@ public class SubscriberWorker(
         await Task.Delay(200, stoppingToken);
 
         // ── Client B: EUR/GBP ────────────────────────────────────────────────
-        _clientB = subscriber
+        /*_clientB = subscriber
             .Subscribe(
                 new SpotRequest { CurrencyPair = "EUR/GBP" },
                 behavior: StreamBehavior.Live,
@@ -98,7 +103,7 @@ public class SubscriberWorker(
                 onCompleted: () =>
                     logger.LogInformation("[Client B] EUR/GBP stream completed normally"));
 
-        logger.LogInformation("Both clients active. Waiting for prices...");
+        logger.LogInformation("Both clients active. Waiting for prices...");*/
 
         await Task.Delay(Timeout.Infinite, stoppingToken);
     }

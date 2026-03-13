@@ -7,5 +7,5 @@ namespace Streamly.Core.Runtime.Publishing;
 /// </summary>
 internal interface IConfirmationPublisherFactory
 {
-    ConfirmationPublisher Create(string streamName);
+    Task<ConfirmationPublisher> CreateAsync(string streamName);
 }

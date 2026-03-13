@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
+using Streamly.Core.Configurations;
 using Streamly.Core.Models;
 using Streamly.Infrastructure.Interfaces;
 using Streamly.Subscriber.Configuration;
@@ -15,6 +16,7 @@ internal class SubscriptionManager<TRequest, TResponse>(
     ISubjectResolver subjects,
     IMessageSerializer serializer,
     IOptions<SubscriberOptions> options,
+    IOptions<StreamlyRuntimeOptions> runtimeOptions,
     ILogger<SubscriptionManager<TRequest, TResponse>> logger)
     : IAsyncDisposable
 {
@@ -22,6 +24,7 @@ internal class SubscriptionManager<TRequest, TResponse>(
     private readonly ISubjectResolver _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));  
     private readonly IMessageSerializer _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
     private readonly SubscriberOptions _options = options.Value ?? throw new ArgumentNullException(nameof(options));
+    private readonly StreamlyRuntimeOptions _runtimeOptions = runtimeOptions.Value ?? throw new ArgumentNullException(nameof(runtimeOptions));
     private readonly ILogger<SubscriptionManager<TRequest, TResponse>> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     private readonly ConcurrentDictionary<string, List<SubscriptionState<TResponse>>> _byRequestId = new();
@@ -36,20 +39,28 @@ internal class SubscriptionManager<TRequest, TResponse>(
     // ── Watchdog ─────────────────────────────────────────────────────────────
     private DateTime _lastResponseTime = DateTime.UtcNow;
     private CancellationTokenSource? _watchdogCts;
+    private CancellationTokenSource? _reconnectTriggerCts;
     private Task? _watchdogTask;
 
+    // ── Heartbeat ─────────────────────────────────────────────────────────────
+    private CancellationTokenSource? _heartbeatCts;
+    private Task? _heartbeatTask;
+    
     public async Task RegisterPendingAsync(
         SubscriptionState<TResponse> state,
+        CancellationTokenSource attemptCts,      // ← new parameter
         CancellationToken cancellationToken)
     {
         await EnsureTransportSubscribedAsync(cancellationToken);
 
         _byCorrelationId[state.CorrelationId] = state;
         Interlocked.Increment(ref _activeSubscriptionCount);
-
-        // Start watchdog on first registration
+    
+        _reconnectTriggerCts = attemptCts;       // ← store it
+    
         StartWatchdog();
-
+        StartHeartbeat();
+        
         _logger.LogDebug(
             "Registered pending subscription '{CorrelationId}' for stream '{StreamName}'",
             state.CorrelationId, streamName);
@@ -80,10 +91,76 @@ internal class SubscriptionManager<TRequest, TResponse>(
         if (_activeSubscriptionCount <= 0)
         {
             StopWatchdog();
+            StopHeartbeat();
             await UnsubscribeFromTransportAsync();
         }
     }
 
+    #region Heartbeat
+
+    private void StartHeartbeat()
+    {
+        if (_heartbeatTask is { IsCompleted: false })
+            return; // already running
+
+        _heartbeatCts = new CancellationTokenSource();
+        _heartbeatTask = RunHeartbeatAsync(_heartbeatCts.Token);
+
+        _logger.LogDebug(
+            "Subscriber heartbeat started for stream '{StreamName}' " +
+            "(interval: {Interval}ms)",
+            streamName, _options.HeartbeatIntervalMs);
+    }
+
+    private void StopHeartbeat()
+    {
+        _heartbeatCts?.Cancel();
+        _heartbeatCts = null;
+    }
+
+    private async Task RunHeartbeatAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(_options.HeartbeatIntervalMs, ct);
+
+                if (_activeSubscriptionCount <= 0) continue;
+
+                var heartbeat = new SubscriberHeartbeatMessage
+                {
+                    SubscriberId = _runtimeOptions.InstanceId
+                };
+
+                var data = serializer.Serialize(heartbeat);
+                var subject = subjects.GetSubscriberHeartbeatSubject();
+
+                await transport.PublishAsync(subject, data, ct);
+
+                _logger.LogTrace(
+                    "Subscriber heartbeat sent (subscriberId: '{SubscriberId}')",
+                    _runtimeOptions.InstanceId);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal — log and keep trying
+                _logger.LogWarning(ex,
+                    "Failed to send subscriber heartbeat for stream '{StreamName}'",
+                    streamName);
+            }
+        }
+
+        _logger.LogDebug(
+            "Subscriber heartbeat stopped for stream '{StreamName}'", streamName);
+    }
+
+    #endregion
+    
     #region Watchdog
 
     private void StartWatchdog()
@@ -156,10 +233,8 @@ internal class SubscriptionManager<TRequest, TResponse>(
             .Distinct()
             .ToList();
 
-        foreach (var state in activeStates)
+        foreach (var state in activeStates.Where(state => !state.IsDisposed))
         {
-            if (state.IsDisposed) continue;
-
             state.ReconnectAttempts++;
 
             state.NotifyStatus(StreamStatus.Reconnecting(
@@ -169,6 +244,8 @@ internal class SubscriptionManager<TRequest, TResponse>(
                 new PublisherUnavailableException(
                     $"No response from '{streamName}' for {(int)_options.HeartbeatTimeout.TotalMilliseconds}ms")));
         }
+        
+        _reconnectTriggerCts?.Cancel();
     }
 
     /// <summary>
@@ -238,6 +315,18 @@ internal class SubscriptionManager<TRequest, TResponse>(
         }
 
         return Task.CompletedTask;
+    }
+
+    private Task OnKeepaliveReceivedAsync(byte[] data)
+    {
+        // Reset watchdog — publisher is alive even if no prices
+        _lastResponseTime = DateTime.UtcNow;
+
+        _logger.LogTrace(
+            "Keepalive received for stream '{StreamName}'", streamName);
+
+        return Task.CompletedTask;
+
     }
 
     private Task OnResponseReceivedAsync(byte[] data)
@@ -343,10 +432,15 @@ internal class SubscriptionManager<TRequest, TResponse>(
             // Get subject names from resolver
             var responsesSubject = _subjects.GetResponsesWildcard(streamName);
             var confirmSubject = _subjects.GetConfirmSubject(streamName);
-
+            var keepaliveSubject = _subjects.GetKeepaliveSubject(streamName);
+           
             // Subscribe to transport
             await _transport.SubscribeAsync(confirmSubject, OnConfirmationReceivedAsync, cancellationToken);
             await _transport.SubscribeAsync(responsesSubject, OnResponseReceivedAsync, cancellationToken);
+            await _transport.SubscribeAsync(
+                keepaliveSubject, 
+                OnKeepaliveReceivedAsync, 
+                cancellationToken);
 
             // Initialize worker pool for parallel dispatch
             _workerPool = new DispatchWorkerPool<TResponse>(
@@ -378,10 +472,12 @@ internal class SubscriptionManager<TRequest, TResponse>(
             // Get subject names from resolver
             var responsesSubject = _subjects.GetResponsesWildcard(streamName);
             var confirmSubject = _subjects.GetConfirmSubject(streamName);
+            var keepaliveSubject = _subjects.GetKeepaliveSubject(streamName);
             
             // Unsubscribe from transport
             await _transport.UnsubscribeAsync(confirmSubject);
             await _transport.UnsubscribeAsync(responsesSubject);
+            await _transport.UnsubscribeAsync(keepaliveSubject);
 
             // Dispose worker pool
             if (_workerPool != null)
@@ -430,6 +526,7 @@ internal class SubscriptionManager<TRequest, TResponse>(
             {
                 RequestId = requestId,
                 StreamName = streamName,
+                SubscriberId = runtimeOptions.Value.InstanceId,
                 UnsubscribedAt = DateTime.UtcNow
             };
 
@@ -455,7 +552,7 @@ internal class SubscriptionManager<TRequest, TResponse>(
         _disposed = true;
 
         StopWatchdog();
-
+        StopHeartbeat();
         foreach (var states in _byRequestId.Values)
             lock (states)
                 foreach (var s in states)

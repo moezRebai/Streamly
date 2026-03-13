@@ -46,4 +46,11 @@ public class RequestEnvelope<TRequest>
     /// </summary>
     [JsonPropertyName("subscribedAt")]
     public DateTime SubscribedAt { get; set; } = DateTime.UtcNow;
+    
+    /// <summary>
+    /// InstanceId of the subscribing service.
+    /// Used by publisher to track per-subscriber leases.
+    /// </summary>
+    [JsonPropertyName("subscriberId")]
+    public string SubscriberId { get; set; } = string.Empty;
 }

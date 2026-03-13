@@ -64,6 +64,8 @@ internal class StreamLeadershipCoordinator : IAsyncDisposable
         _leaderMonitor = new LeaderMonitor(
             LeaderElection,
             options,
+            subjects,
+            transport,
             loggerFactory.CreateLogger<LeaderMonitor>());
 
         _logger.LogDebug(
