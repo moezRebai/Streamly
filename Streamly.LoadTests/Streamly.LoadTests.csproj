@@ -7,4 +7,16 @@
         <Nullable>enable</Nullable>
     </PropertyGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\Streamly.Core\Streamly.Core.csproj" />
+        <ProjectReference Include="..\Streamly.Subscriber\Streamly.Subscriber.csproj" />
+
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="System.Reactive" Version="6.1.0" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.3" />
+    </ItemGroup>
+
 </Project>

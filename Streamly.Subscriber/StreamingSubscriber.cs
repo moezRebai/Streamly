@@ -124,7 +124,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
 
                     cycleAttempt = 0; // next iteration = attempt 1
                     
-                    var delay = CalculateDelay(1);
+                    var delay = CalculateDelay();
                     await SafeDelay(delay, cancellationToken);
                 }
                 catch (TimeoutException ex)
@@ -133,9 +133,9 @@ internal class StreamingSubscriber<TRequest, TResponse>
                     // → keep incrementing, apply backoff
                     _logger.LogWarning("No confirmation for '{StreamName}' (attempt {Attempt}/{Max}), " +
                         "retrying in {Delay:F1}s",
-                        _streamName, cycleAttempt, _options.MaxReconnectAttempts, CalculateDelay(cycleAttempt).TotalSeconds);
+                        _streamName, cycleAttempt, _options.MaxReconnectAttempts, CalculateDelay().TotalSeconds);
 
-                    await SafeDelay(CalculateDelay(cycleAttempt), cancellationToken);
+                    await SafeDelay(CalculateDelay(), cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -144,7 +144,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
                         "Unexpected error on '{StreamName}' (attempt {Attempt}/{Max})",
                         _streamName, cycleAttempt, _options.MaxReconnectAttempts);
 
-                    await SafeDelay(CalculateDelay(cycleAttempt), cancellationToken);
+                    await SafeDelay(CalculateDelay(), cancellationToken);
                 }
             }
         });
@@ -255,7 +255,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
         }
     }
 
-    private TimeSpan CalculateDelay(int attempt)
+    private TimeSpan CalculateDelay()
     {
         // Constant delay with small jitter to avoid thundering herd
         var jitter = Random.Shared.NextDouble() * 0.4 - 0.2; // ±20%

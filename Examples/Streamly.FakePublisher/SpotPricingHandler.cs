@@ -66,7 +66,7 @@ public class SpotPricingHandler(ILogger<SpotPricingHandler> logger)
         // Continuous ticking
         while (!cancellationToken.IsCancellationRequested)
         {
-            await Task.Delay(5, cancellationToken);
+            await Task.Delay(300, cancellationToken);
 
             basePrice += (decimal)(random.NextDouble() - 0.5) * 0.0003m;
 

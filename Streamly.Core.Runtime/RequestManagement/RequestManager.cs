@@ -24,13 +24,14 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
     private readonly IRequestIdentityProvider<TRequest> _identityProvider;
     private readonly IStreamingRequestHandler<TRequest, TResponse> _handler;
     private readonly ILeaderElectionFactory _leaderElectionFactory;
-    private ILeaderElectionService _leaderElection = null!; // initialisé dans StartAsync
+    private ILeaderElectionService _leaderElection = null!;
     private readonly IMessageSerializer _serializer;
     private readonly IOptions<StreamlyRuntimeOptions> _runtimeOptions;
     private readonly IOptions<StateSyncOptions> _stateSyncOptions;
     private readonly ILogger<RequestManager<TRequest, TResponse>> _logger;
     private readonly IStreamingContextFactory<TRequest, TResponse> _contextFactory;
-    private readonly ConfirmationPublisher _confirmationPublisher;
+    private readonly IConfirmationQueueFactory _confirmationQueueFactory;
+    private ConfirmationQueue? _confirmationQueue;
     private readonly IStreamingTransport _transport;
     private readonly ISubjectResolver _subjects;
     private readonly string _requestsSubject;
@@ -75,6 +76,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         IOptions<StreamlyRuntimeOptions> runtimeOptions,
         IStreamingContextFactory<TRequest, TResponse> contextFactory,
         IConfirmationPublisherFactory confirmationPublisherFactory,
+        IConfirmationQueueFactory confirmationQueueFactory,
         ILoggerFactory loggerFactory,
         IMessageSerializer serializer)
     {
@@ -88,8 +90,9 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
 
         _contextFactory = contextFactory ?? throw new ArgumentNullException(nameof(contextFactory));
         _serializer = serializer;
-        _confirmationPublisher = confirmationPublisherFactory.CreateAsync(_streamName).GetAwaiter().GetResult();
-
+        confirmationPublisherFactory.CreateAsync(_streamName).GetAwaiter().GetResult();
+        _confirmationQueueFactory = confirmationQueueFactory ?? throw new ArgumentNullException(nameof(confirmationQueueFactory));
+        
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
 
@@ -117,11 +120,11 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
 
         try
         {
-            // Fix #1 : résolution async du service de leadership (pas dans le constructeur)
-            _leaderElection = await _leaderElectionFactory.GetOrCreateAsync(
-                _streamName, cancellationToken);
+            _leaderElection = await _leaderElectionFactory.GetOrCreateAsync(_streamName, cancellationToken);
             _leaderElection.LeadershipChanged += OnLeadershipChanged;
 
+            _confirmationQueue = await _confirmationQueueFactory.CreateAsync(_streamName);
+            
             // Subscribe to incoming requests
             await _transport.SubscribeAsync(_requestsSubject, OnRequestReceivedAsync, cancellationToken);
 
@@ -145,6 +148,8 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
             // Start batch sync loop
             _batchSyncCts = new CancellationTokenSource();
             _batchSyncTask = RunBatchSyncLoopAsync(_batchSyncCts.Token);
+
+            _confirmationQueue.Start(_batchSyncCts!.Token);
 
             // Start lease check loop
             _leaseCheckCts = new CancellationTokenSource();
@@ -201,6 +206,11 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
                 catch (OperationCanceledException)
                 {
                 }
+            }
+
+            if (_confirmationQueue is not null)
+            {
+                await _confirmationQueue.StopAsync();
             }
 
             // Close all active requests
@@ -1021,25 +1031,23 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
             // Deserialize envelope (wraps user request + behavior + correlationId)
             var envelope = _serializer.Deserialize<RequestEnvelope<TRequest>>(data);
 
-            _logger.LogInformation(
-                "Request received — SubscriberId: '{SubscriberId}'",
-                envelope.SubscriberId);
-
             _logger.LogDebug(
-                "Received {Behavior} request from Redis for stream '{StreamName}'",
+                "Received {Behavior} request for stream '{StreamName}'",
                 envelope.Behavior,
                 _streamName);
 
             // Open request (idempotent - same request = same RequestId)
             // ALL instances do this (for failover readiness)
             var requestId = await OpenRequestAsync(envelope, CancellationToken.None);
-
-            // ONLY LEADER sends confirmation back to subscriber
-            // Subscriber needs the RequestId to filter responses
-            await _confirmationPublisher.ConfirmAsync(
-                envelope.CorrelationId,
-                requestId,
-                CancellationToken.None);
+            
+            // ONLY LEADER confirms — enqueue and return immediately.
+            // ConfirmationQueue drain loop sends at NATS pace, one at a time.
+            if (_leaderElection.IsLeader)
+            {
+                await _confirmationQueue!.EnqueueAsync(
+                    envelope.CorrelationId,
+                    requestId);
+            }
         }
         catch (Exception ex)
         {
@@ -1170,6 +1178,11 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
 
         _leaseCheckCts?.Dispose();
 
+        if (_confirmationQueue is not null)
+        {
+            await _confirmationQueue.DisposeAsync();
+        }
+        
         _logger.LogDebug(
             "RequestManager disposed for stream '{StreamName}'",
             _streamName);

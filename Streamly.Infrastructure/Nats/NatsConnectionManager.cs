@@ -170,10 +170,7 @@ public sealed class NatsConnectionManager(
             subject: subject,
             data: data,
             cancellationToken: ct).ConfigureAwait(false);
-
-        // NATS Core does not return subscriber counts (unlike Redis).
-        // Return 0 as a sentinel; callers that need subscriber counts
-        // should not rely on this value for NATS.
+        
         return 0L;
     }
 

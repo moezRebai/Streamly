@@ -30,7 +30,7 @@ public class StreamlyBenchmarkConfig : ManualConfig
     {
         AddJob(Job.Default
             .WithWarmupCount(1)
-            .WithIterationCount(5)
+            .WithIterationCount(1)
             .WithInvocationCount(1)
             .WithUnrollFactor(1)
             .WithId("Streamly"));

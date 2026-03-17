@@ -36,6 +36,7 @@ public sealed class BenchmarkHarness : IAsyncDisposable
             {
                 ["Streamly:NatsUrl"]      = NatsUrl,
                 ["Streamly:ServiceName"] = $"Bench-{Guid.NewGuid():N}"[..20],
+                ["Streamly:SubscriberHeartbeatTimeoutMs"] = "2000",
             })
             .Build();
 

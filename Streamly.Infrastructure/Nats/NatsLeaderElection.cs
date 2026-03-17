@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NATS.Client.Core;
+using NATS.Client.JetStream;
 using NATS.Client.KeyValueStore;
 using NATS.Net;
 using Streamly.Core.Abstractions;
@@ -93,7 +94,7 @@ public sealed class NatsLeaderElection : ILeaderElection
 
                 _logger.LogDebug("Using existing KV bucket '{Bucket}'", _subjectResolver.GetLeaderElectionBucketSubject());
             }
-            catch (NatsKVException)
+            catch (Exception ex) when (ex is NatsKVException or NatsJSApiException)
             {
                 _logger.LogInformation(
                     "Creating KV bucket '{Bucket}' with TTL {Ttl}",

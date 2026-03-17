@@ -1,5 +1,3 @@
-// FILE: Streamly.Benchmarks/Benchmarks/BurstOpenBenchmark.cs
-//
 // Measures burst-open latency: wall-clock elapsed from the first SubscribeAsync
 // call to the moment the LAST of N subscribers receives its first price.
 //
@@ -28,7 +26,7 @@ public class BurstOpenBenchmark
 {
     private BenchmarkHarness _harness = null!;
 
-    [Params(1, 100, 1_000, 2000, 5000)]
+    [Params(15000)]
     public int N;
 
     private ConcurrentBag<IDisposable> _subscriptions = new();
@@ -53,7 +51,7 @@ public class BurstOpenBenchmark
         DrainAndDispose(ref _subscriptions);
         // Let the publisher clear its registry before the next iteration
         // floods it with N fresh requests.
-        Thread.Sleep(500);
+        Thread.Sleep(5000);
     }
 
     [Benchmark]
@@ -106,7 +104,7 @@ public class BurstOpenBenchmark
 
         // Safety net: 2 minutes is far beyond any realistic burst window.
         // Hitting it means the run is invalid (publisher overloaded / crashed).
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         cts.Token.Register(() =>
             tcs.TrySetException(new TimeoutException(
                 $"Only {N - remaining}/{N} streams received first price within 2 min.")));

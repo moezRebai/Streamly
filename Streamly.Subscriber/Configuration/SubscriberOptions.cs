@@ -12,7 +12,7 @@ public class SubscriberOptions
     /// If no confirmation received within this time, retry
     /// Default: 2 seconds
     /// </summary>
-    public TimeSpan ConfirmationTimeout { get; set; } = TimeSpan.FromSeconds(2);
+    public TimeSpan ConfirmationTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// Number of parallel dispatch workers per stream type
@@ -32,7 +32,7 @@ public class SubscriberOptions
     /// Reconnect policy: max retry attempts before giving up
     /// Default: 10 (matches architecture doc)
     /// </summary>
-    public int MaxReconnectAttempts { get; set; } = 10;
+    public int MaxReconnectAttempts { get; set; } = 20;
 
     /// <summary>
     /// Initial delay before first reconnect attempt

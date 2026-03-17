@@ -80,7 +80,7 @@ public static class StreamlyServiceCollectionExtensions
             typeof(RequestManager<,>));
 
         services.TryAddSingleton<IConfirmationPublisherFactory, ConfirmationPublisherFactory>();
-
+        services.TryAddSingleton<IConfirmationQueueFactory, ConfirmationQueueFactory>();
         // 6. Register all handlers + their change detectors
         foreach (var handler in options.Handlers)
         {
