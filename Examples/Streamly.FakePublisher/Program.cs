@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using Serilog;
-using Streamly.Core.Runtime;
-using Streamly.Publisher;
+using Streamly;
+using Streamly.FakePublisher;
+using Streamly.FakePublisher.IRSwap;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
-    .WriteTo.File($"logs/{Process.GetCurrentProcess().ProcessName}-.log", rollingInterval: RollingInterval.Day)
+    //.WriteTo.Console()
+    .WriteTo.File($"logs/{Process.GetCurrentProcess().ProcessName}-.log",
+        rollingInterval: RollingInterval.Day)
     .CreateLogger();
 
 try
@@ -17,6 +20,7 @@ try
             services.AddStreamly(context.Configuration, options =>
             {
                 options.AddHandler<SpotRequest, SpotPrice, SpotPricingHandler>("SpotPricer");
+                options.AddHandler<IrsRequest, IrsResponse, IrsPricingHandler>("IrsPricer");
             });
         })
         .Build();

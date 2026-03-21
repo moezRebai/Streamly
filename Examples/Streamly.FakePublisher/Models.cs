@@ -3,7 +3,9 @@
 // Simple request/response models for testing
 // ═══════════════════════════════════════════════════════
 
-namespace Streamly.Publisher;
+using Streamly.Core.ChangeDetection;
+
+namespace Streamly.FakePublisher;
 
 public class SpotRequest
 {
@@ -12,8 +14,11 @@ public class SpotRequest
 
 public class SpotPrice
 {
+    [IgnoreInComparison]
     public string CurrencyPair { get; set; } = string.Empty;
     public decimal Bid { get; set; }
     public decimal Ask { get; set; }
+    
+    [IgnoreInComparison]
     public DateTime Timestamp { get; set; }
 }

@@ -7,8 +7,8 @@ using Streamly.Infrastructure.Interfaces;
 namespace Streamly.Infrastructure.Serialization;
 
 /// <summary>
-/// JSON-based message serializer using System.Text.Json.
-/// Infrastructure layer - just serialization, no business logic.
+///     JSON-based message serializer using System.Text.Json.
+///     Infrastructure layer - just serialization, no business logic.
 /// </summary>
 public class MessageSerializer(ILogger<MessageSerializer> logger) : IMessageSerializer
 {
@@ -17,10 +17,10 @@ public class MessageSerializer(ILogger<MessageSerializer> logger) : IMessageSeri
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false,  // Compact for network transport
+        WriteIndented = false, // Compact for network transport
         Converters =
         {
-            new JsonStringEnumConverter()  // Enums as strings
+            new JsonStringEnumConverter() // Enums as strings
         }
     };
 
@@ -31,7 +31,7 @@ public class MessageSerializer(ILogger<MessageSerializer> logger) : IMessageSeri
     {
         if (obj == null)
             throw new ArgumentNullException(nameof(obj));
-        
+
         try
         {
             return JsonSerializer.SerializeToUtf8Bytes(obj, _jsonOptions);
@@ -42,18 +42,18 @@ public class MessageSerializer(ILogger<MessageSerializer> logger) : IMessageSeri
             throw new SerializationException($"Failed to serialize {typeof(T).Name}", ex);
         }
     }
-    
+
     public T Deserialize<T>(byte[] data)
     {
         if (data == null || data.Length == 0)
             throw new ArgumentException("Data cannot be null or empty", nameof(data));
-        
+
         try
         {
             var result = JsonSerializer.Deserialize<T>(data, _jsonOptions);
             if (result == null)
                 throw new SerializationException($"Deserialization resulted in null for type {typeof(T).Name}");
-            
+
             return result;
         }
         catch (Exception ex)
@@ -62,18 +62,18 @@ public class MessageSerializer(ILogger<MessageSerializer> logger) : IMessageSeri
             throw new SerializationException($"Failed to deserialize {typeof(T).Name}", ex);
         }
     }
-    
+
     public T Deserialize<T>(ReadOnlySpan<byte> data)
     {
         if (data.IsEmpty)
             throw new ArgumentException("Data cannot be empty", nameof(data));
-        
+
         try
         {
             var result = JsonSerializer.Deserialize<T>(data, _jsonOptions);
             if (result == null)
                 throw new SerializationException($"Deserialization resulted in null for type {typeof(T).Name}");
-            
+
             return result;
         }
         catch (Exception ex)

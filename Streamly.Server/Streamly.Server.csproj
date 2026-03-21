@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <PackageId>Streamly.Server</PackageId>
+        <Description>
+            Publisher-side runtime for Streamly. Handles stream lifecycle,
+            leader election, change detection, keepalive, and response
+            publishing over NATS JetStream.
+        </Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.3" />
+      <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Streamly.Core\Streamly.Core.csproj" />
+      <ProjectReference Include="..\Streamly.Infrastructure\Streamly.Infrastructure.csproj" />
+    </ItemGroup>
+
+</Project>

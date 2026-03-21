@@ -3,24 +3,24 @@ using Microsoft.Extensions.Options;
 namespace Streamly.Core.Configurations;
 
 /// <summary>
-/// Validates StreamlyRuntimeOptions configuration
+/// Validates StreamlyOptions configuration
 /// </summary>
-public class StreamlyRuntimeOptionsValidator : IValidateOptions<StreamlyRuntimeOptions>
+public class StreamlyOptionsValidator : IValidateOptions<StreamlySettings>
 {
-    public ValidateOptionsResult Validate(string? name, StreamlyRuntimeOptions options)
+    public ValidateOptionsResult Validate(string? name, StreamlySettings settings)
     {
         // Validate ServiceName
-        if (string.IsNullOrWhiteSpace(options.ServiceName))
+        if (string.IsNullOrWhiteSpace(settings.ServiceName))
             return ValidateOptionsResult.Fail(
                 "ServiceName cannot be null or whitespace. " +
                 "Provide a value in configuration under 'Streamly:ServiceName'.");
 
-        if (options.ServiceName.Length > 50)
+        if (settings.ServiceName.Length > 50)
             return ValidateOptionsResult.Fail(
-                $"ServiceName '{options.ServiceName}' is too long (max 50 characters).");
+                $"ServiceName '{settings.ServiceName}' is too long (max 50 characters).");
 
         // Validate InstanceId (computed or explicit)
-        var instanceId = options.InstanceId;
+        var instanceId = settings.InstanceId;
 
         if (string.IsNullOrWhiteSpace(instanceId))
             return ValidateOptionsResult.Fail(

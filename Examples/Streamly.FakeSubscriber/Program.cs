@@ -1,18 +1,27 @@
-using Streamly.Subscriber;
+using System.Diagnostics;
+using Serilog;
+using Streamly;
+using Streamly.FakeSubscriber;
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .WriteTo.File($"logs/{Process.GetCurrentProcess().ProcessName}-.log",
+        rollingInterval: RollingInterval.Day)
+    .CreateLogger();
 
 var host = Host.CreateDefaultBuilder(args)
+    .UseSerilog()
     .ConfigureServices((context, services) =>
     {
-        services.AddStreamlySubscriber(context.Configuration, options =>
+        services.AddStreamly(context.Configuration, options =>
         {
             options.AddSubscriber<SpotRequest, SpotPrice>("SpotPricer");
+            options.AddSubscriber<IrsRequest, IrsResponse>("IrsPricer");
         });
-
-        // Add SUBSCRIBER components (reuses existing NATS infrastructure)
-        //services.AddSubscriberComponents<SpotPriceRequest, SpotPrice>("SpotPricer");
-
-        // Register the test worker that drives the two clients
-        services.AddHostedService<SubscriberWorker>();
+        
+        //services.AddHostedService<SubscriberWorker>();
+        services.AddHostedService<IrsSubscriberWorker>();
     })
     .Build();
 

@@ -12,45 +12,107 @@ using Streamly.Core.Configurations;
 namespace Streamly.Infrastructure.Nats;
 
 /// <summary>
-/// NATS.Net implementation of <see cref="IStreamingTransport"/>.
-///
-/// Design decisions:
-///   - Uses NATS.Net v2 (NATS.Client.Core) with NatsConnection
-///   - Subscriptions run as background tasks (fire-and-forget per message)
-///   - Each subject maps to exactly one subscription task (idempotent subscribe)
-///   - Raw byte[] transport; serialization handled by IMessageSerializer in the Runtime layer
+///     NATS.Net implementation of <see cref="IStreamingTransport" />.
+///     Design decisions:
+///     - Uses NATS.Net v2 (NATS.Client.Core) with NatsConnection
+///     - Subscriptions run as background tasks (fire-and-forget per message)
+///     - Each subject maps to exactly one subscription task (idempotent subscribe)
+///     - Raw byte[] transport; serialization handled by IMessageSerializer in the Runtime layer
 /// </summary>
 public sealed class NatsConnectionManager(
     IOptions<NatsConnectionOptions> options,
-    IOptions<StreamlyRuntimeOptions> runtimeOptions,
+    IOptions<StreamlySettings> runtimeOptions,
     ISubjectResolver subjectResolver,
     ILogger<NatsConnectionManager> logger)
     : IStreamingTransport, INatsConnectionAccessor
 {
-    private readonly NatsConnectionOptions _options = options.Value;
-
-    private NatsConnection? _connection;
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
+    private readonly NatsConnectionOptions _options = options.Value;
 
     // subject → active subscription cancellation
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _subscriptions = new();
 
+    private NatsConnection? _connection;
+
     private volatile bool _disposed;
-
-    public event Action<Exception>? OnConnectionError;
-    public event Action? OnReconnected;
-
-    public bool IsConnected => _connection?.ConnectionState == NatsConnectionState.Open;
 
     // Internal accessor for NatsLeaderElection (avoids exposing NatsConnection publicly)
     NatsConnection INatsConnectionAccessor.NatsConnection =>
         _connection ?? throw new InvalidOperationException(
             "NATS not connected. Call ConnectAsync() first.");
 
+    public event Action<Exception>? OnConnectionError;
+    public event Action? OnReconnected;
+
+    public bool IsConnected => _connection?.ConnectionState == NatsConnectionState.Open;
+
+    // ── IStreamingTransport ───────────────────────────────────────────────────
+
+    public async Task<long> PublishAsync(string subject, byte[] data, CancellationToken ct = default)
+    {
+        EnsureConnected();
+
+        await _connection!.PublishAsync(
+            subject,
+            data,
+            cancellationToken: ct).ConfigureAwait(false);
+
+        return 0L;
+    }
+
+    public Task SubscribeAsync(string subject, Func<byte[], Task> handler, CancellationToken ct = default)
+    {
+        EnsureConnected();
+
+        // Cancel any existing subscription for this subject
+        if (_subscriptions.TryRemove(subject, out var existing))
+        {
+            existing.Cancel();
+            existing.Dispose();
+        }
+
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _subscriptions[subject] = cts;
+
+        // Run the subscription loop as a background task
+        _ = RunSubscriptionLoopAsync(subject, handler, cts.Token);
+
+        logger.LogDebug("Subscribed to NATS subject: {Subject}", subject);
+        return Task.CompletedTask;
+    }
+
+    public Task UnsubscribeAsync(string subject, CancellationToken ct = default)
+    {
+        if (!_subscriptions.TryRemove(subject, out var cts)) return Task.CompletedTask;
+        cts.Cancel();
+        cts.Dispose();
+        logger.LogDebug("Unsubscribed from NATS subject: {Subject}", subject);
+        return Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        // Cancel all subscriptions
+        foreach (var cts in _subscriptions.Values)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+
+        _subscriptions.Clear();
+
+        if (_connection is not null) await _connection.DisposeAsync().ConfigureAwait(false);
+
+        _connectionLock.Dispose();
+    }
+
     /// <summary>
-    /// Ensures this InstanceId is not already taken by another running instance.
-    /// Uses NATS KV atomic CreateAsync — fails hard if key already exists.
-    /// TTL ensures the key expires naturally if process crashes.
+    ///     Ensures this InstanceId is not already taken by another running instance.
+    ///     Uses NATS KV atomic CreateAsync — fails hard if key already exists.
+    ///     TTL ensures the key expires naturally if process crashes.
     /// </summary>
     public async Task EnsureUniqueInstanceAsync(string instanceId, CancellationToken ct = default)
     {
@@ -111,8 +173,8 @@ public sealed class NatsConnectionManager(
     // ── Initialisation ────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Eagerly establish the NATS connection.
-    /// Called by the DI extension; safe to call multiple times.
+    ///     Eagerly establish the NATS connection.
+    ///     Called by the DI extension; safe to call multiple times.
     /// </summary>
     public async Task ConnectAsync(CancellationToken ct = default)
     {
@@ -158,50 +220,6 @@ public sealed class NatsConnectionManager(
         {
             _connectionLock.Release();
         }
-    }
-
-    // ── IStreamingTransport ───────────────────────────────────────────────────
-
-    public async Task<long> PublishAsync(string subject, byte[] data, CancellationToken ct = default)
-    {
-        EnsureConnected();
-
-        await _connection!.PublishAsync(
-            subject: subject,
-            data: data,
-            cancellationToken: ct).ConfigureAwait(false);
-        
-        return 0L;
-    }
-
-    public Task SubscribeAsync(string subject, Func<byte[], Task> handler, CancellationToken ct = default)
-    {
-        EnsureConnected();
-
-        // Cancel any existing subscription for this subject
-        if (_subscriptions.TryRemove(subject, out var existing))
-        {
-            existing.Cancel();
-            existing.Dispose();
-        }
-
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _subscriptions[subject] = cts;
-
-        // Run the subscription loop as a background task
-        _ = RunSubscriptionLoopAsync(subject, handler, cts.Token);
-
-        logger.LogDebug("Subscribed to NATS subject: {Subject}", subject);
-        return Task.CompletedTask;
-    }
-
-    public Task UnsubscribeAsync(string subject, CancellationToken ct = default)
-    {
-        if (!_subscriptions.TryRemove(subject, out var cts)) return Task.CompletedTask;
-        cts.Cancel();
-        cts.Dispose();
-        logger.LogDebug("Unsubscribed from NATS subject: {Subject}", subject);
-        return Task.CompletedTask;
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -254,13 +272,12 @@ public sealed class NatsConnectionManager(
             Name = _options.ConnectionName,
             MaxReconnectRetry = _options.MaxReconnectAttempts,
             ReconnectWaitMin = _options.ReconnectWait, // Start delay
-            ReconnectWaitMax = _options.ReconnectWait * 5,
+            ReconnectWaitMax = _options.ReconnectWait * 5
         };
 
         // Authentication if provided
         if (!string.IsNullOrWhiteSpace(_options.Username) &&
             !string.IsNullOrWhiteSpace(_options.Password))
-        {
             opts = opts with
             {
                 AuthOpts = NatsAuthOpts.Default with
@@ -269,9 +286,7 @@ public sealed class NatsConnectionManager(
                     Password = _options.Password
                 }
             };
-        }
         else if (!string.IsNullOrWhiteSpace(_options.CredentialsFile))
-        {
             // Load credentials from file
             opts = opts with
             {
@@ -280,7 +295,6 @@ public sealed class NatsConnectionManager(
                     CredsFile = _options.CredentialsFile
                 }
             };
-        }
 
         return opts;
     }
@@ -291,27 +305,5 @@ public sealed class NatsConnectionManager(
             throw new InvalidOperationException(
                 "NATS connection not initialised. Call ConnectAsync() first " +
                 "or register via AddNatsInfrastructure().");
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_disposed) return;
-        _disposed = true;
-
-        // Cancel all subscriptions
-        foreach (var cts in _subscriptions.Values)
-        {
-            cts.Cancel();
-            cts.Dispose();
-        }
-
-        _subscriptions.Clear();
-
-        if (_connection is not null)
-        {
-            await _connection.DisposeAsync().ConfigureAwait(false);
-        }
-
-        _connectionLock.Dispose();
     }
 }

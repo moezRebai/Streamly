@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <PackageId>Streamly.Client</PackageId>
+        <Description>
+            Subscriber-side runtime for Streamly. Handles subscriptions,
+            dispatch worker pool, watchdog, and reconnection over NATS
+            JetStream.
+        </Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
+      <PackageReference Include="System.Reactive" Version="6.1.0" />
+      <PackageReference Include="System.Reactive.Linq" Version="6.1.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Streamly.Core\Streamly.Core.csproj" />
+      <ProjectReference Include="..\Streamly.Infrastructure\Streamly.Infrastructure.csproj" />
+    </ItemGroup>
+
+</Project>

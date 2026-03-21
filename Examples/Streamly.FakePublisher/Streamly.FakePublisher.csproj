@@ -5,7 +5,8 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <UserSecretsId>dotnet-Streamly.Publisher-1521736c-dbc9-4a97-bec3-bf7fe8c08fd4</UserSecretsId>
-        <RootNamespace>Streamly.Publisher</RootNamespace>
+        <RootNamespace>Streamly.FakePublisher</RootNamespace>
+        <IsPackable>false</IsPackable>
     </PropertyGroup>
 
     <PropertyGroup>
@@ -22,6 +23,6 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\..\Streamly.Core.Runtime\Streamly.Core.Runtime.csproj" />
+  <ProjectReference Include="..\..\Streamly\Streamly.csproj" />
     </ItemGroup>
 </Project>

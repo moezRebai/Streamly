@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <PackageId>Streamly</PackageId>
+        <Description>
+            Meta-package for the Streamly distributed real-time streaming
+            library. References both Streamly.Server and Streamly.Client
+            for services that publish and subscribe on the same host.
+        </Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Streamly.Server\Streamly.Server.csproj"
+                          PrivateAssets="none" />
+        <ProjectReference Include="..\Streamly.Client\Streamly.Client.csproj"
+                          PrivateAssets="none" />
+    </ItemGroup>
+
+</Project>

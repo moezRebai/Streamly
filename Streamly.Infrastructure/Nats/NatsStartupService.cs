@@ -6,14 +6,13 @@ using Streamly.Core.Configurations;
 namespace Streamly.Infrastructure.Nats;
 
 /// <summary>
-/// Hosted service that initializes NATS connection and optionally starts leader election.
-/// 
-/// For Publishers: ILeaderElection is required and leadership is attempted on startup.
-/// For Subscribers: ILeaderElection is optional (null) - subscribers don't need leadership.
+///     Hosted service that initializes NATS connection and optionally starts leader election.
+///     For Publishers: ILeaderElection is required and leadership is attempted on startup.
+///     For Subscribers: ILeaderElection is optional (null) - subscribers don't need leadership.
 /// </summary>
 internal sealed class NatsStartupService(
     NatsConnectionManager connectionManager,
-    IOptions<StreamlyRuntimeOptions> runtimeOptions,
+    IOptions<StreamlySettings> runtimeOptions,
     ILogger<NatsStartupService> logger)
     : IHostedService
 {
@@ -23,11 +22,11 @@ internal sealed class NatsStartupService(
 
         // Just connect to NATS
         await connectionManager.ConnectAsync(cancellationToken);
-        
+
         // Hard fail if InstanceId already taken by another running instance
         await connectionManager.EnsureUniqueInstanceAsync(
             runtimeOptions.Value.InstanceId, cancellationToken);
-        
+
         logger.LogInformation("NATS infrastructure ready");
     }
 

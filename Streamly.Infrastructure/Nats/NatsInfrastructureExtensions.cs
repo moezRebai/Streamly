@@ -8,7 +8,7 @@ namespace Streamly.Infrastructure.Nats;
 public static class NatsInfrastructureExtensions
 {
     /// <summary>
-    /// Register NATS infrastructure for PUBLISHER/RUNTIME services (with leader election)
+    ///     Register NATS infrastructure for PUBLISHER/RUNTIME services (with leader election)
     /// </summary>
     public static IServiceCollection AddNatsPublisherInfrastructure(
         this IServiceCollection services,
@@ -19,19 +19,19 @@ public static class NatsInfrastructureExtensions
 
         // Register connection manager
         services.TryAddSingleton<NatsConnectionManager>();
-        services.TryAddSingleton<IStreamingTransport>(sp => 
+        services.TryAddSingleton<IStreamingTransport>(sp =>
             sp.GetRequiredService<NatsConnectionManager>());
-        
+
         // ✅ Register leader election (ONLY for publishers)
         //services.TryAddSingleton<ILeaderElection, NatsLeaderElection>();
-        
+
         // Register startup service
         services.AddHostedService<NatsStartupService>();
         return services;
     }
 
     /// <summary>
-    /// Register NATS infrastructure for SUBSCRIBER services (NO leader election)
+    ///     Register NATS infrastructure for SUBSCRIBER services (NO leader election)
     /// </summary>
     public static IServiceCollection AddNatsSubscriberInfrastructure(
         this IServiceCollection services,
@@ -42,7 +42,7 @@ public static class NatsInfrastructureExtensions
 
         // Register connection manager
         services.TryAddSingleton<NatsConnectionManager>();
-        services.TryAddSingleton<IStreamingTransport>(sp => 
+        services.TryAddSingleton<IStreamingTransport>(sp =>
             sp.GetRequiredService<NatsConnectionManager>());
 
         // Register startup service
