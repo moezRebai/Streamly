@@ -1,0 +1,83 @@
+@using Streamly.Dashboard.Aggregation
+@* Compact instance summary card used inside ClusterOverview drill-down header *@
+
+<div style="display:flex; align-items:center; gap:16px; padding:8px 4px;">
+
+    @* Status dot *@
+    <MudTooltip Text="@HealthLabel">
+        <div style="width:10px; height:10px; border-radius:50%; background:@HealthColor; flex-shrink:0;"></div>
+    </MudTooltip>
+
+    @* Role pill *@
+    <MudChip T="string" Size="Size.Small" Style="@RoleStyle" Class="ma-0">
+        @(State.Metrics?.InstanceRole ?? "Unknown")
+    </MudChip>
+
+    @* Leader badge *@
+    @if (State.IsLeader)
+    {
+        <MudChip T="string" Size="Size.Small"
+                 Style="background:#185FA5; color:#fff; height:20px;"
+                 Class="ma-0">
+            LEADER
+        </MudChip>
+    }
+
+    <MudDivider Vertical="true" FlexItem="true" Style="height:18px;"/>
+
+    @* Key metrics *@
+    <div style="display:flex; gap:24px;">
+        <StatCell Label="Active streams" Value="@(State.Metrics?.ActiveStreams.ToString() ?? "—")"/>
+        <StatCell Label="Pub/s"          Value="@(State.Metrics?.PublishRatePerSec.ToString("F1") ?? "—")"/>
+        <StatCell Label="Subscriptions"  Value="@(State.Metrics?.ActiveSubscriptions.ToString() ?? "—")"/>
+        <StatCell Label="NATS"           Value="@(State.Metrics?.NatsConnected == true ? "Connected" : "Disconnected")"
+                  ValueStyle="@(State.Metrics?.NatsConnected == true ? "color:#3B6D11" : "color:#c62828")"/>
+    </div>
+
+    <MudSpacer/>
+
+    @* Last polled *@
+    <MudText Typo="Typo.caption" Style="opacity:.4;">
+        @FormatPolled(State.LastPolledAt)
+    </MudText>
+</div>
+
+@* Inline helper so we don't need a separate file *@
+@* StatCell is defined as a nested render fragment below *@
+
+@code {
+    [Parameter, EditorRequired] public InstanceState State { get; set; } = default!;
+
+    string HealthColor => State.Health switch
+    {
+        InstanceHealth.Healthy     => "#3B6D11",
+        InstanceHealth.Degraded    => "#854F0B",
+        InstanceHealth.Unreachable => "#c62828",
+        _                          => "gray"
+    };
+
+    string HealthLabel => State.Health switch
+    {
+        InstanceHealth.Healthy     => "Healthy",
+        InstanceHealth.Degraded    => "Degraded — NATS disconnected",
+        InstanceHealth.Unreachable => $"Unreachable — {State.LastErrorMessage}",
+        _                          => "Unknown"
+    };
+
+    string RoleStyle => (State.Metrics?.InstanceRole ?? "Unknown") switch
+    {
+        "Publisher"  => "background:#185FA5; color:#fff; height:20px;",
+        "Subscriber" => "background:#6a1b9a; color:#fff; height:20px;",
+        "Both"       => "background:#00695c; color:#fff; height:20px;",
+        _            => "background:rgba(128,128,128,.3); color:inherit; height:20px;"
+    };
+
+    static string FormatPolled(DateTimeOffset dt)
+    {
+        var age = DateTimeOffset.UtcNow - dt;
+        return age.TotalSeconds < 5 ? "just now" : $"{(int)age.TotalSeconds}s ago";
+    }
+}
+
+@* ── Tiny inline StatCell helper ───────────────────────────────────────── *@
+@* Defined as a separate component file: Components/StatCell.razor *@

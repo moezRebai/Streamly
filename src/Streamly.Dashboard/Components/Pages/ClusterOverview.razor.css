@@ -1,0 +1,7 @@
+::deep .selected-instance-row td {
+    background: rgba(24, 95, 165, 0.12) !important;
+}
+
+::deep .mud-table-row:hover.selected-instance-row td {
+    filter: brightness(1.1);
+}

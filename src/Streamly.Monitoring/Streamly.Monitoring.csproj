@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <PackageId>Streamly.Monitoring</PackageId>
+        <Description>
+            In-process metrics collection and HTTP endpoints for Streamly.
+            Opt-in — call AddStreamlyMonitoring() and MapStreamlyEndpoints()
+            to activate. No-op by default.
+        </Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Streamly.Audit\Streamly.Audit.csproj" />
+      <ProjectReference Include="..\Streamly.Core\Streamly.Core.csproj" />
+    </ItemGroup>
+</Project>

@@ -18,8 +18,8 @@ namespace Streamly.Benchmarks;
 public sealed class BenchmarkHarness : IAsyncDisposable
 {
     public const string NatsUrl = "nats://localhost:4222";
-    public const string SpotStreamName = "SpotPricer";
-    public const string IrsStreamName = "IrsPricer";
+    public const string SpotStreamName = "GetSpotPrice";
+    public const string IrsStreamName = "GetSwapPrice";
 
     private IHost? _subscriberHost;
 

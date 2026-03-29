@@ -1,0 +1,280 @@
+@using Streamly.Monitoring.Models
+
+<MudTable T="StreamDetailRecord"
+          Items="Streams"
+          Dense="true"
+          Hover="true"
+          Striped="false"
+          Bordered="false"
+          Elevation="0"
+          RowClassFunc="RowClass"
+          OnRowClick="OnRowClick"
+          Style="background:transparent; table-layout:fixed; width:100%;"
+          Virtualize="true"
+          FixedHeader="true"
+          Height="@Height"
+          GroupBy="@_groupDefinition">
+
+    <ColGroup>
+        <col style="width:40px;"/>   @* expand arrow *@
+        <col/>                        @* Request ID — takes remaining space *@
+        @if (ShowInstance) { <col style="width:120px;"/> }
+        <col style="width:140px;"/>   @* Opened At *@
+        <col style="width:140px;"/>   @* Last Update *@
+        <col style="width:90px;"/>    @* Publishes *@
+        <col style="width:50px;"/>    @* Subs *@
+        <col style="width:120px;"/>   @* Skip % *@
+        <col style="width:100px;"/>   @* First Response *@
+        <col style="width:100px;"/>   @* Last Latency *@
+        <col style="width:90px;"/>    @* State *@
+    </ColGroup>
+
+    <HeaderContent>
+        <MudTh/>
+        <MudTh>Request ID</MudTh>
+        @if (ShowInstance)
+        {
+            <MudTh>Instance</MudTh>
+        }
+        <MudTh>Opened At</MudTh>
+        <MudTh>
+            <MudTableSortLabel SortBy="@(new Func<StreamDetailRecord, object>(s => s.LastPublishedAt))">
+                Last Update
+            </MudTableSortLabel>
+        </MudTh>
+        <MudTh Style="text-align:right;">Publishes</MudTh>
+        <MudTh Style="text-align:right;">Subs</MudTh>
+        <MudTh>Skip %</MudTh>
+        <MudTh Style="text-align:right;">
+            <MudTableSortLabel SortBy="@(new Func<StreamDetailRecord, object>(s => s.FirstResponseLatencyMs))">
+                First Resp.
+            </MudTableSortLabel>
+        </MudTh>
+        <MudTh Style="text-align:right;">
+            <MudTableSortLabel SortBy="@(new Func<StreamDetailRecord, object>(s => s.LastLatencyMs))">
+                Latency
+            </MudTableSortLabel>
+        </MudTh>
+        <MudTh>State</MudTh>
+    </HeaderContent>
+
+    <GroupHeaderTemplate>
+        <MudTh colspan="@(ShowInstance ? 11 : 10)"
+                Style="background:rgba(128,128,128,.07); padding:6px 12px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <MudText Typo="Typo.caption"
+                         Style="font-weight:600; font-size:.78rem; letter-spacing:.04em; text-transform:uppercase;">
+                    @context.Key
+                </MudText>
+                <MudText Typo="Typo.caption" Style="opacity:.4; font-size:.72rem;">
+                    @context.Items.Count() streams
+                </MudText>
+            </div>
+        </MudTh>
+    </GroupHeaderTemplate>
+
+    <RowTemplate>
+
+        @* Empty cell — aligns with the group expand/collapse arrow column *@
+        <MudTd/>
+
+        @* Request ID — blue, underlined, clickable *@
+        <MudTd>
+            <MudText Typo="Typo.caption"
+                     Style="font-family:monospace; font-size:.72rem; color:#5b9bd5;
+                            text-decoration:underline; cursor:pointer; white-space:nowrap;"
+                     @onclick="@(() => OnStreamClick.InvokeAsync(context.RequestId))">
+                @context.RequestId
+            </MudText>
+        </MudTd>
+
+        @if (ShowInstance)
+        {
+            <MudTd>
+                <MudText Typo="Typo.caption">@InstanceLabel</MudText>
+            </MudTd>
+        }
+
+        @* Opened At *@
+        <MudTd>
+            <MudTooltip Text="@RelativeAge(context.OpenedAt)" Placement="Placement.Top">
+                <MudText Typo="Typo.caption"
+                         Style="cursor:default; font-variant-numeric:tabular-nums;">
+                    @FormatTimestamp(context.OpenedAt)
+                </MudText>
+            </MudTooltip>
+        </MudTd>
+
+        @* Last Update *@
+        <MudTd>
+            @if (context.LastPublishedAt is { } last)
+            {
+                <MudTooltip Text="@RelativeAge(last)" Placement="Placement.Top">
+                    <MudText Typo="Typo.caption"
+                             Style="cursor:default; font-variant-numeric:tabular-nums;">
+                        @FormatTimestamp(last)
+                    </MudText>
+                </MudTooltip>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">—</MudText>
+            }
+        </MudTd>
+
+        @* Publish count *@
+        <MudTd Style="text-align:right;">
+            @if (SubscriberMode)
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">N/A</MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption" Style="font-variant-numeric:tabular-nums;">
+                    @context.PublishCount.ToString("N0")
+                </MudText>
+            }
+        </MudTd>
+
+        @* Subscribers *@
+        <MudTd Style="text-align:right;">
+            @if (SubscriberMode)
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">N/A</MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption">@context.SubscriberCount</MudText>
+            }
+        </MudTd>
+
+        @* Skip % with mini bar *@
+        <MudTd>
+            @if (SubscriberMode)
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">N/A</MudText>
+            }
+            else
+            {
+                var skipPct  = SkipPercent(context);
+                var barColor = skipPct > 50 ? "#854F0B" : "var(--mud-palette-success)";
+                var barWidth = Math.Min(skipPct, 100).ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <MudText Typo="Typo.caption"
+                             Style="width:36px; text-align:right; font-variant-numeric:tabular-nums;">
+                        @skipPct.ToString("F0")%
+                    </MudText>
+                    <div style="flex:1; height:4px; background:rgba(128,128,128,.15); border-radius:2px;">
+                        <div style="width:@(barWidth)%; height:4px; background:@barColor; border-radius:2px; transition:width .3s;"></div>
+                    </div>
+                </div>
+            }
+        </MudTd>
+
+        @* First response latency *@
+        <MudTd Style="text-align:right;">
+            @if (!SubscriberMode)
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">N/A</MudText>
+            }
+            else if (context.FirstResponseLatencyMs > 0)
+            {
+                <MudText Typo="Typo.caption" Style="color:#5b9bd5; font-variant-numeric:tabular-nums;">
+                    @context.FirstResponseLatencyMs.ToString("F0") ms
+                </MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">—</MudText>
+            }
+        </MudTd>
+
+        @* Last message latency *@
+        <MudTd Style="text-align:right;">
+            @if (!SubscriberMode)
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">N/A</MudText>
+            }
+            else if (context.LastLatencyMs > 0)
+            {
+                <MudText Typo="Typo.caption" Style="font-variant-numeric:tabular-nums;">
+                    @context.LastLatencyMs.ToString("F0") ms
+                </MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption" Style="opacity:.35;">—</MudText>
+            }
+        </MudTd>
+
+        @* State badge *@
+        <MudTd>
+            <MudChip T="string"
+                     Size="Size.Small"
+                     Style="@StateStyle(context.State)"
+                     Class="ma-0">
+                @context.State
+            </MudChip>
+        </MudTd>
+
+    </RowTemplate>
+
+    <NoRecordsContent>
+        <MudText Typo="Typo.caption" Style="opacity:.4; padding:16px;">No streams</MudText>
+    </NoRecordsContent>
+
+</MudTable>
+
+@code {
+    [Parameter] public IEnumerable<StreamDetailRecord> Streams        { get; set; } = [];
+    [Parameter] public EventCallback<string>           OnStreamClick  { get; set; }
+    [Parameter] public string?                         SelectedId     { get; set; }
+    [Parameter] public bool                            ShowInstance   { get; set; }
+    [Parameter] public string                          InstanceLabel  { get; set; } = string.Empty;
+    [Parameter] public string                          Height         { get; set; } = "calc(100vh - 380px)";
+    [Parameter] public bool                            SubscriberMode { get; set; }
+
+    private readonly TableGroupDefinition<StreamDetailRecord> _groupDefinition = new()
+    {
+        GroupName           = "Stream",
+        Indentation         = false,
+        Expandable          = true,
+        IsInitiallyExpanded = true,
+        Selector            = r => r.StreamName
+    };
+
+    string RowClass(StreamDetailRecord r, int _) =>
+        r.RequestId == SelectedId ? "selected-stream-row" : string.Empty;
+
+    async Task OnRowClick(TableRowClickEventArgs<StreamDetailRecord> args)
+    {
+        if (args.Item is not null)
+            await OnStreamClick.InvokeAsync(args.Item.RequestId);
+    }
+
+    static string FormatTimestamp(DateTimeOffset dt) =>
+        dt.ToLocalTime().ToString("HH:mm:ss.fff");
+
+    static string RelativeAge(DateTimeOffset dt)
+    {
+        var age = DateTimeOffset.UtcNow - dt;
+        if (age.TotalDays >= 1)    return $"{(int)age.TotalDays}d {age.Hours}h ago";
+        if (age.TotalHours >= 1)   return $"{(int)age.TotalHours}h {age.Minutes}m ago";
+        if (age.TotalMinutes >= 1) return $"{(int)age.TotalMinutes}m {age.Seconds}s ago";
+        return age.TotalSeconds < 5 ? "just now" : $"{(int)age.TotalSeconds}s ago";
+    }
+
+    static double SkipPercent(StreamDetailRecord r)
+    {
+        long total = r.PublishCount + r.SkipCount;
+        return total == 0 ? 0 : (double)r.SkipCount / total * 100;
+    }
+
+    static string StateStyle(string state) => state switch
+    {
+        "Streaming" => "background:#3B6D11; color:#fff; height:20px;",
+        "Closing"   => "background:#c62828; color:#fff; height:20px;",
+        "Slow"      => "background:#854F0B; color:#fff; height:20px;",
+        _           => "background:rgba(128,128,128,.3); color:inherit; height:20px;"
+    };
+}

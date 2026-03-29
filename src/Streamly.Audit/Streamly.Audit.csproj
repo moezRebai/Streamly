@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <PackageId>Streamly.Audit</PackageId>
+        <Description>
+            Durable audit trail for Streamly. Writes every published price to
+            NATS JetStream (STREAMLY_AUDIT stream) via a non-blocking Channel
+            buffer. Provides IAuditReader for time-range replay queries.
+            Opt-in — call AddStreamlyAudit() to activate.
+        </Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Streamly.Core\Streamly.Core.csproj" />
+      <ProjectReference Include="..\Streamly.Infrastructure\Streamly.Infrastructure.csproj" />
+    </ItemGroup>
+
+</Project>

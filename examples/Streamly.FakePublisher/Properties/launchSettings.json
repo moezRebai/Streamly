@@ -1,0 +1,25 @@
+﻿{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+
+    "Publisher-InstanceA": {
+      "commandName": "Project",
+      "applicationUrl": "http://localhost:5101",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Streamly__ServiceName": "SpotPricer1-Instance1",
+        "Streamly__Nats__ConnectionName": "Streamly-Publisher-1"
+      }
+    },
+
+    "Publisher-InstanceB": {
+      "commandName": "Project",
+      "applicationUrl": "http://localhost:5102",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Streamly__ServiceName": "SpotPricer-Instance2",
+        "Streamly__Nats__ConnectionName": "Streamly-Publisher-2"
+      }
+    }
+  }
+}

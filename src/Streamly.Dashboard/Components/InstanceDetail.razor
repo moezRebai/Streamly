@@ -1,0 +1,339 @@
+@page "/instances/{InstanceId}"
+@rendermode InteractiveServer
+@inject InstanceRegistry Registry
+@inject NavigationManager Nav
+@using Streamly.Dashboard.Aggregation
+@using Streamly.Monitoring.Models
+
+<PageTitle>@(_state?.Config.Label ?? InstanceId) — Streamly</PageTitle>
+
+@if (_state is null)
+{
+    <MudText Typo="Typo.body2" Style="opacity:.5;">
+        Instance "@InstanceId" not found.
+        <MudLink Href="/">Back to overview</MudLink>
+    </MudText>
+}
+else
+{
+    @* ── Header ───────────────────────────────────────────────────────────── *@
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:24px; flex-wrap:wrap;">
+
+        <MudIconButton Icon="@Icons.Material.Filled.ArrowBack"
+                       Size="Size.Small"
+                       Title="Back to overview"
+                       OnClick="@(() => Nav.NavigateTo("/"))"/>
+
+        @* Status dot *@
+        <MudTooltip Text="@HealthLabel">
+            <div style="width:11px; height:11px; border-radius:50%;
+                        background:@HealthColor; flex-shrink:0;">
+            </div>
+        </MudTooltip>
+
+        <div>
+            <MudText Typo="Typo.h6" Style="font-weight:600; line-height:1.2;">
+                @_state.Config.Label
+            </MudText>
+            <MudText Typo="Typo.caption" Style="opacity:.4;">
+                @_state.Config.BaseUrl
+            </MudText>
+        </div>
+
+        @* Role pill *@
+        <MudChip T="string" Size="Size.Small" Style="@RolePillStyle" Class="ma-0">
+            @_state.Role
+        </MudChip>
+
+        @* Leader badge *@
+        @if (_state.IsLeader)
+        {
+            <MudChip T="string" Size="Size.Small"
+                     Style="background:#185FA5; color:#fff; height:22px;"
+                     Class="ma-0">
+                LEADER · epoch @(_state.Metrics?.LeaderEpoch ?? 0)
+            </MudChip>
+        }
+
+        @* NATS status *@
+        <MudChip T="string" Size="Size.Small" Class="ma-0"
+                 Style="@(_state.Metrics?.NatsConnected == true
+                     ? "background:rgba(59,109,17,.2); color:#6DBF45; height:22px;"
+                     : "background:rgba(198,40,40,.2); color:#ef9a9a; height:22px;")">
+            NATS @(_state.Metrics?.NatsConnected == true ? "Connected" : "Disconnected")
+        </MudChip>
+
+        <MudSpacer/>
+
+        @* Refresh button *@
+        <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                       Size="Size.Small"
+                       Title="Refresh"
+                       OnClick="Refresh"/>
+
+        @* Last loaded timestamp *@
+        <MudText Typo="Typo.caption" Style="opacity:.35;">
+            loaded @FormatPolled(_loadedAt)
+        </MudText>
+    </div>
+
+    @* ── Metric cells ──────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-6">
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Active Streams"
+                          Value="@(_state.Metrics?.ActiveStreams.ToString() ?? "—")"/>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Pub/s"
+                          Value="@(_state.Metrics?.PublishRatePerSec.ToString("F1") ?? "—")"/>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Subscriptions"
+                          Value="@(_state.Metrics?.ActiveSubscriptions.ToString() ?? "—")"/>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Uptime"
+                          Value="@FormatUptime(_state.Metrics?.StartedAt)"/>
+            </MudPaper>
+        </MudItem>
+
+    </MudGrid>
+
+    @* ── Subscriber latency summary (only when instance has subscriptions) ── *@
+    @if (SubscribedStreams.Length > 0)
+    {
+        var activeSubscribed = SubscribedStreams.Where(s => s.FirstResponseLatencyMs > 0 || s.LastLatencyMs > 0).ToList();
+        var withFirstResponse = activeSubscribed.Where(s => s.FirstResponseLatencyMs > 0).ToList();
+        if (activeSubscribed.Count > 0)
+        {
+            <MudGrid Spacing="3" Class="mb-6">
+
+                <MudItem xs="6" sm="3">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <StatCell Label="Max First Response"
+                                  Value="@($"{withFirstResponse.Max(s => s.FirstResponseLatencyMs):F0} ms")"
+                                  ValueStyle="color:#5b9bd5;"/>
+                        <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                            across @activeSubscribed.Count open streams
+                        </MudText>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="6" sm="3">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <StatCell Label="Avg First Response"
+                                  Value="@($"{withFirstResponse.Average(s => s.FirstResponseLatencyMs):F0} ms")"
+                                  ValueStyle="color:#5b9bd5;"/>
+                        <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                            @withFirstResponse.Count streams measured
+                        </MudText>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="6" sm="3">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <StatCell Label="Max Last Latency"
+                                  Value="@($"{activeSubscribed.Max(s => s.LastLatencyMs):F0} ms")"/>
+                        <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                            slowest live stream
+                        </MudText>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="6" sm="3">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <StatCell Label="Avg Last Latency"
+                                  Value="@($"{activeSubscribed.Average(s => s.LastLatencyMs):F0} ms")"/>
+                        <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                            across all open streams
+                        </MudText>
+                    </MudPaper>
+                </MudItem>
+
+            </MudGrid>
+        }
+    }
+
+    @* ── Streams tabs ──────────────────────────────────────────────────────── *@
+    <MudPaper Elevation="2">
+        <MudTabs Elevation="0"
+                 Rounded="false"
+                 ApplyEffectsToContainer="true"
+                 PanelClass="pa-0">
+
+            @* ── Publishing tab ──────────────────────────────────────────── *@
+            <MudTabPanel Text="Publishing"
+                         Icon="@Icons.Material.Filled.Upload"
+                         BadgeData="@PublishingStreams.Length"
+                         BadgeColor="Color.Primary">
+                @if (PublishingStreams.Length == 0)
+                {
+                    <MudText Typo="Typo.caption"
+                             Style="opacity:.4; padding:24px; display:block;">
+                        No publishing streams on this instance.
+                    </MudText>
+                }
+                else
+                {
+                    <div style="padding:8px 12px 4px;">
+                        <MudTextField @bind-Value="_publishSearch"
+                                      Placeholder="Filter streams…"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      IconSize="Size.Small"
+                                      Immediate="true"
+                                      Clearable="true"
+                                      Style="max-width:300px;"
+                                      Class="mt-0"/>
+                    </div>
+                    <StreamTable Streams="FilteredPublishing"
+                                 OnStreamClick="NavigateToStream"/>
+                }
+            </MudTabPanel>
+
+            @* ── Subscribed tab ──────────────────────────────────────────── *@
+            <MudTabPanel Text="Subscribed"
+                         Icon="@Icons.Material.Filled.Download"
+                         BadgeData="@(_state.Metrics?.ActiveSubscriptions ?? 0)"
+                         BadgeColor="Color.Secondary">
+                @if (_state.Metrics?.ActiveSubscriptions == 0
+                  || _state.Metrics is null)
+                {
+                    <MudText Typo="Typo.caption"
+                             Style="opacity:.4; padding:24px; display:block;">
+                        No active subscriptions on this instance.
+                    </MudText>
+                }
+                else
+                {
+                    <div style="padding:8px 12px 4px;">
+                        <MudTextField @bind-Value="_subscribedSearch"
+                                      Placeholder="Filter streams…"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      IconSize="Size.Small"
+                                      Immediate="true"
+                                      Clearable="true"
+                                      Style="max-width:300px;"
+                                      Class="mt-0"/>
+                    </div>
+                    <StreamTable Streams="FilteredSubscribed"
+                                 OnStreamClick="NavigateToStream"
+                                 SubscriberMode="true"/>
+                }
+            </MudTabPanel>
+
+        </MudTabs>
+    </MudPaper>
+}
+
+@code {
+    [Parameter] public string InstanceId { get; set; } = string.Empty;
+
+    InstanceState?   _state;
+    DateTimeOffset   _loadedAt;
+    string           _publishSearch    = "";
+    string           _subscribedSearch = "";
+
+    // ── Stream splits ─────────────────────────────────────────────────────
+
+    StreamDetailRecord[] PublishingStreams =>
+        _state?.Metrics?.InstanceRole is "Publisher" or "Both"
+            ? _state.Streams
+            : [];
+
+    StreamDetailRecord[] SubscribedStreams =>
+        _state?.Metrics?.InstanceRole is "Subscriber" or "Both"
+            ? _state.Streams
+            : [];
+
+    IEnumerable<StreamDetailRecord> FilteredPublishing =>
+        string.IsNullOrWhiteSpace(_publishSearch)
+            ? PublishingStreams
+            : PublishingStreams.Where(s =>
+                s.StreamName.Contains(_publishSearch, StringComparison.OrdinalIgnoreCase) ||
+                s.RequestId.Contains(_publishSearch, StringComparison.OrdinalIgnoreCase));
+
+    IEnumerable<StreamDetailRecord> FilteredSubscribed =>
+        string.IsNullOrWhiteSpace(_subscribedSearch)
+            ? SubscribedStreams
+            : SubscribedStreams.Where(s =>
+                s.StreamName.Contains(_subscribedSearch, StringComparison.OrdinalIgnoreCase) ||
+                s.RequestId.Contains(_subscribedSearch, StringComparison.OrdinalIgnoreCase));
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+
+    protected override void OnParametersSet()
+    {
+        _state    = Registry.Get(InstanceId);
+        _loadedAt = DateTimeOffset.UtcNow;
+    }
+
+    void Refresh()
+    {
+        _state    = Registry.Get(InstanceId);
+        _loadedAt = DateTimeOffset.UtcNow;
+    }
+
+    // ── Navigation ────────────────────────────────────────────────────────
+
+    void NavigateToStream(string requestId) =>
+        Nav.NavigateTo($"/streams/{requestId}?from={InstanceId}");
+
+    // ── Derived display props ─────────────────────────────────────────────
+
+    string HealthColor => _state?.Health switch
+    {
+        InstanceHealth.Healthy     => "#3B6D11",
+        InstanceHealth.Degraded    => "#854F0B",
+        InstanceHealth.Unreachable => "#c62828",
+        _                          => "gray"
+    } ?? "gray";
+
+    string HealthLabel => _state?.Health switch
+    {
+        InstanceHealth.Healthy     => "Healthy",
+        InstanceHealth.Degraded    => "Degraded — NATS disconnected",
+        InstanceHealth.Unreachable => "Unreachable" + (_state?.LastErrorMessage is { } msg ? $" — {msg}" : ""),
+        _                          => "Unknown"
+    } ?? "Unknown";
+
+    string RolePillStyle =>
+        (_state?.Metrics?.InstanceRole ?? "Unknown") switch
+        {
+            "Publisher"  => "background:#185FA5; color:#fff; height:22px;",
+            "Subscriber" => "background:#6a1b9a; color:#fff; height:22px;",
+            "Both"       => "background:#00695c; color:#fff; height:22px;",
+            _            => "background:rgba(128,128,128,.3); color:inherit; height:22px;"
+        };
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    static string FormatPolled(DateTimeOffset dt)
+    {
+        var age = DateTimeOffset.UtcNow - dt;
+        return age.TotalSeconds < 5 ? "just now" : $"{(int)age.TotalSeconds}s ago";
+    }
+
+    static string FormatUptime(DateTimeOffset? startedAt)
+    {
+        if (startedAt is null) return "—";
+        var up = DateTimeOffset.UtcNow - startedAt.Value;
+        return up.TotalDays >= 1
+            ? $"{(int)up.TotalDays}d {up.Hours}h"
+            : up.TotalHours >= 1
+                ? $"{(int)up.TotalHours}h {up.Minutes}m"
+                : $"{up.Minutes}m {up.Seconds}s";
+    }
+}

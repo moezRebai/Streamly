@@ -21,7 +21,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\Streamly\Streamly.csproj" />
+        <ProjectReference Include="..\..\src\Streamly\Streamly.csproj" />
     </ItemGroup>
 
 </Project>

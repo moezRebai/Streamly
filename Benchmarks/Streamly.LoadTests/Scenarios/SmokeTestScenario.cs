@@ -25,7 +25,7 @@ namespace Streamly.LoadTests.Scenarios;
 public class SmokeTestScenario
 {
     private const string NatsUrl    = "nats://localhost:4222";
-    private const string StreamName = "SpotPricer";
+    private const string StreamName = "GetSpotPrice";
 
     // How long to sustain each load level after all streams have established.
     private static readonly TimeSpan SustainedDuration = TimeSpan.FromMinutes(3);

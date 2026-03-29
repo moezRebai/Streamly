@@ -1,0 +1,204 @@
+@page "/"
+@rendermode InteractiveServer
+@inject InstanceRegistry Registry
+@inject NavigationManager Nav
+@using Microsoft.AspNetCore.SignalR.Client
+@using Streamly.Dashboard.Aggregation
+@using Streamly.Dashboard.Hubs
+@implements IAsyncDisposable
+
+<PageTitle>Cluster Overview — Streamly</PageTitle>
+
+@* ── Metric cards ──────────────────────────────────────────────────────── *@
+<MudGrid Spacing="3" Class="mb-6">
+
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <StatCell Label="Active Streams"
+                      Value="@Registry.TotalActiveStreams.ToString("N0")"
+                      ValueStyle="font-size:1.5rem;"/>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <StatCell Label="Cluster Pub/s"
+                      Value="@Registry.TotalPublishRatePerSec.ToString("F1")"
+                      ValueStyle="font-size:1.5rem;"/>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <StatCell Label="Skip Ratio"
+                      Value="@($"{(Registry.ClusterSkipRatio * 100):F1}%")"
+                      ValueStyle="@($"font-size:1.5rem;{(Registry.ClusterSkipRatio > .5 ? " color:#854F0B" : "")}")"/>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" sm="6" md="3">
+        <MudPaper Class="pa-4" Elevation="2">
+            <StatCell Label="Cluster Health"
+                      Value="@($"{Registry.HealthyCount} / {Registry.TotalCount}")"
+                      ValueStyle="font-size:1.5rem;"/>
+        </MudPaper>
+    </MudItem>
+
+</MudGrid>
+
+@* ── Instances table ───────────────────────────────────────────────────── *@
+<MudPaper Elevation="2">
+    <MudTable T="InstanceState"
+              Items="Registry.All"
+              Dense="true"
+              Hover="true"
+              Elevation="0"
+              Style="background:transparent;">
+
+        <ToolBarContent>
+            <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Instances</MudText>
+        </ToolBarContent>
+
+        <HeaderContent>
+            <MudTh Style="width:28px;"></MudTh>
+            <MudTh>Instance</MudTh>
+            <MudTh Style="width:110px;">Role</MudTh>
+            <MudTh Style="width:80px; text-align:right;">Pub/s</MudTh>
+            <MudTh Style="width:100px; text-align:right;">Active Streams</MudTh>
+            <MudTh Style="width:100px; text-align:right;">Subscriptions</MudTh>
+            <MudTh Style="width:70px; text-align:right;">Epoch</MudTh>
+            <MudTh Style="width:130px; text-align:right;">Last Update</MudTh>
+        </HeaderContent>
+
+        <RowTemplate>
+            @* Status dot *@
+            <MudTd>
+                <MudTooltip Text="@HealthLabel(context)">
+                    <div style="width:9px; height:9px; border-radius:50%; background:@HealthColor(context);
+                    margin-top:2px;">
+                    </div>
+                </MudTooltip>
+            </MudTd>
+
+            @* Instance name — clickable link *@
+            <MudTd>
+                <MudLink Href="@($"/instances/{context.Config.Id}")"
+                         Typo="Typo.body2"
+                         Style="font-weight:500; text-decoration:none;">
+                    @context.Config.Label
+                </MudLink>
+                <MudText Typo="Typo.caption"
+                         Style="opacity:.4; font-size:.7rem; display:block;">
+                    @context.Config.BaseUrl
+                </MudText>
+            </MudTd>
+
+            @* Role pill *@
+            <MudTd>
+                <MudChip T="string"
+                         Size="Size.Small"
+                         Style="@RolePillStyle(context)"
+                         Class="ma-0">
+                    @(context.IsLeader ? context.Role + " ★" : context.Role)
+                </MudChip>
+            </MudTd>
+
+            @* Pub/s *@
+            <MudTd Style="text-align:right;">
+                <MudText Typo="Typo.caption">
+                    @(context.Metrics?.PublishRatePerSec.ToString("F1") ?? "—")
+                </MudText>
+            </MudTd>
+
+            @* Active streams *@
+            <MudTd Style="text-align:right;">
+                <MudText Typo="Typo.caption">
+                    @(context.Metrics?.ActiveStreams.ToString() ?? "—")
+                </MudText>
+            </MudTd>
+
+            @* Subscriptions *@
+            <MudTd Style="text-align:right;">
+                <MudText Typo="Typo.caption">
+                    @(context.Metrics?.ActiveSubscriptions.ToString() ?? "—")
+                </MudText>
+            </MudTd>
+
+            @* Epoch *@
+            <MudTd Style="text-align:right;">
+                <MudText Typo="Typo.caption" Style="opacity:.5;">
+                    @(context.Metrics?.LeaderEpoch.ToString() ?? "—")
+                </MudText>
+            </MudTd>
+
+            @* Last polled *@
+            <MudTd Style="text-align:right;">
+                <MudText Typo="Typo.caption" Style="opacity:.5;">
+                    @FormatPolled(context.LastPolledAt)
+                </MudText>
+            </MudTd>
+        </RowTemplate>
+
+        <NoRecordsContent>
+            <MudText Typo="Typo.caption" Style="opacity:.4; padding:16px;">
+                No instances configured.
+            </MudText>
+        </NoRecordsContent>
+    </MudTable>
+</MudPaper>
+
+@code {
+    HubConnection? _hub;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _hub = new HubConnectionBuilder()
+            .WithUrl(Nav.ToAbsoluteUri("/hubs/metrics"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        _hub.On(MetricsHub.MetricsUpdatedMethod,
+            () => InvokeAsync(StateHasChanged));
+
+        await _hub.StartAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hub is not null)
+            await _hub.DisposeAsync();
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    static string HealthColor(InstanceState s) => s.Health switch
+    {
+        InstanceHealth.Healthy     => "#3B6D11",
+        InstanceHealth.Degraded    => "#854F0B",
+        InstanceHealth.Unreachable => "#c62828",
+        _                          => "gray"
+    };
+
+    static string HealthLabel(InstanceState s) => s.Health switch
+    {
+        InstanceHealth.Healthy     => "Healthy",
+        InstanceHealth.Degraded    => "Degraded — NATS disconnected",
+        InstanceHealth.Unreachable => $"Unreachable — {s.LastErrorMessage}",
+        _                          => "Unknown"
+    };
+
+    static string RolePillStyle(InstanceState s) =>
+        (s.Metrics?.InstanceRole ?? "Unknown") switch
+        {
+            "Publisher"  => "background:#185FA5; color:#fff; height:20px;",
+            "Subscriber" => "background:#6a1b9a; color:#fff; height:20px;",
+            "Both"       => "background:#00695c; color:#fff; height:20px;",
+            _            => "background:rgba(128,128,128,.3); color:inherit; height:20px;"
+        };
+
+    static string FormatPolled(DateTimeOffset dt) =>
+        dt.ToLocalTime().ToString("HH:mm:ss.fff");
+}

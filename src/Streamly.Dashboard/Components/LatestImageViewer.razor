@@ -1,0 +1,133 @@
+@* Renders a JSON object with syntax highlighting.
+   Keys:    #185FA5 (blue)
+   Strings: #3B6D11 (green)
+   Numbers: #854F0B (amber)
+   null/bool: muted
+*@
+
+<div class="json-viewer" style="@ContainerStyle">
+    @if (string.IsNullOrWhiteSpace(Json))
+    {
+        <span style="opacity:.4; font-style:italic;">no data</span>
+    }
+    else
+    {
+        <pre style="margin:0; white-space:pre-wrap; word-break:break-all; font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace; font-size:.78rem; line-height:1.6;">@((MarkupString)_highlighted)</pre>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Json         { get; set; }
+    [Parameter] public string  MaxHeight    { get; set; } = "320px";
+    [Parameter] public bool    Scrollable   { get; set; } = true;
+
+    string _highlighted = string.Empty;
+
+    string ContainerStyle =>
+        $"overflow:{(Scrollable ? "auto" : "visible")}; max-height:{(Scrollable ? MaxHeight : "none")}; padding:4px 0;";
+
+    protected override void OnParametersSet() => _highlighted = Highlight(Json);
+
+    static string Highlight(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+
+        // Pretty-print first so we get consistent indentation
+        string pretty;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(raw);
+            pretty = System.Text.Json.JsonSerializer.Serialize(
+                doc.RootElement,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            // Not valid JSON — display raw with HTML encoding only
+            return System.Web.HttpUtility.HtmlEncode(raw);
+        }
+
+        // Tokenise with a simple regex-based approach
+        // Order matters: strings before numbers, keys before values
+        var sb = new System.Text.StringBuilder(pretty.Length * 2);
+        var i  = 0;
+
+        while (i < pretty.Length)
+        {
+            char c = pretty[i];
+
+            // Indentation / whitespace — emit as-is
+            if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
+            {
+                sb.Append(c == '\n' ? '\n' : c);
+                i++;
+                continue;
+            }
+
+            // Structural characters
+            if (c is '{' or '}' or '[' or ']' or ',' or ':')
+            {
+                sb.Append(System.Web.HttpUtility.HtmlEncode(c.ToString()));
+                i++;
+                continue;
+            }
+
+            // String token
+            if (c == '"')
+            {
+                int start = i;
+                i++; // skip opening quote
+                while (i < pretty.Length)
+                {
+                    if (pretty[i] == '\\') { i += 2; continue; } // skip escape
+                    if (pretty[i] == '"')  { i++;    break;      }
+                    i++;
+                }
+                var token = pretty[start..i]; // includes surrounding quotes
+
+                // Peek ahead past whitespace to see if followed by ':'  → it's a key
+                int peek = i;
+                while (peek < pretty.Length && (pretty[peek] == ' ' || pretty[peek] == '\t')) peek++;
+                bool isKey = peek < pretty.Length && pretty[peek] == ':';
+
+                string color = isKey ? "#185FA5" : "#3B6D11";
+                sb.Append($"<span style=\"color:{color}\">{System.Web.HttpUtility.HtmlEncode(token)}</span>");
+                continue;
+            }
+
+            // Number token
+            if (char.IsDigit(c) || c == '-')
+            {
+                int start = i;
+                while (i < pretty.Length && (char.IsDigit(pretty[i]) || pretty[i] is '.' or 'e' or 'E' or '+' or '-'))
+                    i++;
+                var token = pretty[start..i];
+                sb.Append($"<span style=\"color:#854F0B\">{System.Web.HttpUtility.HtmlEncode(token)}</span>");
+                continue;
+            }
+
+            // null / true / false
+            if (i + 3 < pretty.Length && pretty[i..].StartsWith("null"))
+            {
+                sb.Append("<span style=\"opacity:.5\">null</span>");
+                i += 4; continue;
+            }
+            if (i + 3 < pretty.Length && pretty[i..].StartsWith("true"))
+            {
+                sb.Append("<span style=\"opacity:.7\">true</span>");
+                i += 4; continue;
+            }
+            if (i + 4 < pretty.Length && pretty[i..].StartsWith("false"))
+            {
+                sb.Append("<span style=\"opacity:.7\">false</span>");
+                i += 5; continue;
+            }
+
+            // Fallback
+            sb.Append(System.Web.HttpUtility.HtmlEncode(c.ToString()));
+            i++;
+        }
+
+        return sb.ToString();
+    }
+}

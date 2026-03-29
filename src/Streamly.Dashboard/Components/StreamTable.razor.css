@@ -1,0 +1,7 @@
+::deep .selected-stream-row td {
+    background: rgba(59, 109, 17, 0.12) !important;
+}
+
+::deep .mud-table-row:hover.selected-stream-row td {
+    filter: brightness(1.1);
+}

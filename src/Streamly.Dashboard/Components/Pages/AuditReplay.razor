@@ -1,0 +1,367 @@
+@page "/audit"
+@rendermode InteractiveServer
+@inject InstanceRegistry Registry
+@inject IAuditReader AuditReader
+@using Streamly.Core.Models
+@using Streamly.Core.Abstractions
+@using Streamly.Dashboard.Aggregation
+
+<PageTitle>Audit Replay — Streamly</PageTitle>
+
+<div style="display:flex; align-items:center; gap:12px; margin-bottom:24px;">
+    <MudText Typo="Typo.h6" Style="font-weight:600;">Audit Replay</MudText>
+    @if (_results.Count > 0)
+    {
+        <MudChip T="string" Size="Size.Small" Class="ma-0"
+                 Style="@(_results.Count >= _limit
+                     ? "background:rgba(133,79,11,.25); height:22px;"
+                     : "background:rgba(128,128,128,.15); height:22px;")">
+            @_results.Count record(s)@(_results.Count >= _limit ? " — limit reached" : "")
+        </MudChip>
+    }
+</div>
+
+@* ── Query form ────────────────────────────────────────────────────────── *@
+<MudPaper Elevation="2" Class="pa-4 mb-4">
+    <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+
+        @* Stream type — free text; active stream names shown as helper hint *@
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_streamName"
+                          Label="Stream type"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Clearable="true"
+                          Class="mt-0"
+                          HelperText="@StreamNamesHint"/>
+        </MudItem>
+
+        @* Request ID *@
+        <MudItem xs="12" sm="6" md="2">
+            <MudTextField @bind-Value="_requestId"
+                          Label="Request ID (optional)"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Clearable="true"
+                          Class="mt-0"/>
+        </MudItem>
+
+        @* From date + time *@
+        <MudItem xs="6" sm="3" md="2">
+            <MudDatePicker @bind-Date="_fromDate"
+                           Label="From date"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Class="mt-0"/>
+        </MudItem>
+        <MudItem xs="6" sm="3" md="1">
+            <MudTimePicker @bind-Time="_fromTime"
+                           Label="From time"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           AmPm="false"
+                           Class="mt-0"/>
+        </MudItem>
+
+        @* To date + time *@
+        <MudItem xs="6" sm="3" md="2">
+            <MudDatePicker @bind-Date="_toDate"
+                           Label="To date"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Class="mt-0"/>
+        </MudItem>
+        <MudItem xs="6" sm="3" md="1">
+            <MudTimePicker @bind-Time="_toTime"
+                           Label="To time"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           AmPm="false"
+                           Class="mt-0"/>
+        </MudItem>
+
+        @* Limit *@
+        <MudItem xs="6" sm="3" md="1">
+            <MudNumericField @bind-Value="_limit"
+                             Label="Limit"
+                             Variant="Variant.Outlined"
+                             Margin="Margin.Dense"
+                             Min="1" Max="100000"
+                             Class="mt-0"/>
+        </MudItem>
+
+        @* Query button *@
+        <MudItem xs="12" sm="6" md="1">
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       Disabled="@(!CanQuery || _isQuerying)"
+                       OnClick="RunQuery"
+                       FullWidth="true">
+                @if (_isQuerying)
+                {
+                    <MudProgressCircular Size="Size.Small"
+                                         Indeterminate="true"
+                                         Class="mr-2"/>
+                }
+                else
+                {
+                    <span>Query</span>
+                }
+            </MudButton>
+        </MudItem>
+
+    </MudGrid>
+
+    @if (_errorMessage is not null)
+    {
+        <MudAlert Severity="Severity.Error" Class="mt-3" Dense="true">
+            @_errorMessage
+        </MudAlert>
+    }
+</MudPaper>
+
+@* ── Results ───────────────────────────────────────────────────────────── *@
+@if (!_hasQueried)
+{
+    <MudPaper Elevation="0"
+              Style="border:1px dashed rgba(128,128,128,.2); border-radius:8px; padding:48px; text-align:center;">
+        <MudIcon Icon="@Icons.Material.Filled.History"
+                 Style="font-size:3rem; opacity:.2; display:block; margin:0 auto 16px;"/>
+        <MudText Typo="Typo.body2" Style="opacity:.4;">
+            Select an instance, stream type and date range, then click Query.
+        </MudText>
+    </MudPaper>
+}
+else if (_results.Count == 0 && !_isQuerying)
+{
+    <MudPaper Elevation="0"
+              Style="border:1px dashed rgba(128,128,128,.2); border-radius:8px; padding:48px; text-align:center;">
+        <MudText Typo="Typo.body2" Style="opacity:.4;">
+            No audit records found for the selected criteria.
+        </MudText>
+    </MudPaper>
+}
+else if (_results.Count > 0)
+{
+    <MudPaper Elevation="2">
+        <MudTable T="AuditRecord"
+                  Items="_results"
+                  Dense="true"
+                  Hover="true"
+                  Elevation="0"
+                  Style="background:transparent;">
+
+            <HeaderContent>
+                <MudTh Style="width:190px; cursor:pointer;" @onclick="ToggleSort">
+                    Timestamp
+                    <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                             Size="Size.Small" Style="vertical-align:middle; opacity:.6; margin-left:2px;"/>
+                </MudTh>
+                <MudTh Style="width:100px; text-align:right;">Sequence</MudTh>
+                <MudTh Style="width:90px;">Stream</MudTh>
+                <MudTh>Request ID</MudTh>
+                <MudTh Style="width:80px; text-align:right;">Size</MudTh>
+                <MudTh Style="width:48px;"></MudTh>
+            </HeaderContent>
+
+            <RowTemplate>
+                <MudTd>
+                    <MudText Typo="Typo.caption"
+                             Style="font-variant-numeric:tabular-nums;">
+                        @context.Timestamp.ToLocalTime().ToString("dd MMM HH:mm:ss.fff")
+                    </MudText>
+                </MudTd>
+
+                <MudTd Style="text-align:right;">
+                    <MudText Typo="Typo.caption"
+                             Style="font-variant-numeric:tabular-nums; font-family:monospace;">
+                        @context.Sequence
+                    </MudText>
+                </MudTd>
+
+                <MudTd>
+                    <MudText Typo="Typo.caption" Style="font-family:monospace;">
+                        @context.StreamName
+                    </MudText>
+                </MudTd>
+
+                <MudTd>
+                    <MudText Typo="Typo.caption"
+                             Style="font-family:monospace; font-size:.72rem; opacity:.7;">
+                        @context.RequestId
+                    </MudText>
+                </MudTd>
+
+                <MudTd Style="text-align:right;">
+                    <MudText Typo="Typo.caption" Style="opacity:.6;">
+                        @FormatSize(context.PayloadSize)
+                    </MudText>
+                </MudTd>
+
+                <MudTd>
+                    <MudIconButton
+                        Icon="@(_expandedSeq == context.Sequence
+                                    ? Icons.Material.Filled.ExpandLess
+                                    : Icons.Material.Filled.ExpandMore)"
+                        Size="Size.Small"
+                        Style="opacity:.5;"
+                        OnClick="@(() => ToggleExpand(context.Sequence))"/>
+                </MudTd>
+            </RowTemplate>
+
+            <ChildRowContent>
+                @if (_expandedSeq == context.Sequence)
+                {
+                    <MudTd colspan="6" Style="padding:0;">
+                        <MudPaper Elevation="0"
+                                  Style="background:rgba(0,0,0,.15); border-radius:0; padding:12px 16px;">
+                            <LatestImageViewer Json="@GetPayloadJson(context)"
+                                               MaxHeight="300px"/>
+                        </MudPaper>
+                    </MudTd>
+                }
+            </ChildRowContent>
+
+        </MudTable>
+    </MudPaper>
+}
+
+@code {
+    // ── Form state ────────────────────────────────────────────────────────
+    string    _streamName = string.Empty;
+    string    _requestId  = string.Empty;
+    DateTime? _fromDate   = DateTime.Today;
+    TimeSpan? _fromTime   = TimeSpan.Zero;
+    DateTime? _toDate     = DateTime.Today;
+    TimeSpan? _toTime     = new TimeSpan(23, 59, 59);
+    int       _limit      = 500;
+    bool      _sortDescending = false;
+
+    // ── Result state ──────────────────────────────────────────────────────
+    List<AuditRecord> _results      = [];
+    bool              _isQuerying   = false;
+    bool              _hasQueried   = false;
+    string?           _errorMessage = null;
+    ulong             _expandedSeq  = 0;
+
+    CancellationTokenSource? _queryCts;
+
+    // ── Derived ───────────────────────────────────────────────────────────
+
+    IEnumerable<string> StreamNames =>
+        Registry.All
+                .Where(i => i.IsReachable)
+                .SelectMany(i => i.Streams.Select(s => s.StreamName))
+                .Distinct()
+                .OrderBy(n => n);
+
+    bool CanQuery =>
+        !string.IsNullOrEmpty(_streamName)
+        && _fromDate.HasValue
+        && _toDate.HasValue;
+
+    DateTimeOffset FromUtc => new(DateTime.SpecifyKind(
+        _fromDate!.Value.Date + (_fromTime ?? TimeSpan.Zero), DateTimeKind.Utc));
+
+    DateTimeOffset ToUtc => new(DateTime.SpecifyKind(
+        _toDate!.Value.Date + (_toTime ?? new TimeSpan(23, 59, 59)), DateTimeKind.Utc));
+
+    string StreamNamesHint
+    {
+        get
+        {
+            var names = StreamNames.ToList();
+            return names.Count == 0 ? string.Empty : string.Join(", ", names);
+        }
+    }
+
+    // ── Query execution ───────────────────────────────────────────────────
+
+    async Task RunQuery()
+    {
+        if (!CanQuery) return;
+
+        _queryCts?.Cancel();
+        _queryCts = new CancellationTokenSource();
+        var ct = _queryCts.Token;
+
+        _results      = [];
+        _errorMessage = null;
+        _expandedSeq  = 0;
+        _isQuerying   = true;
+        _hasQueried   = true;
+        StateHasChanged();
+
+        try
+        {
+            if (FromUtc >= ToUtc)
+            {
+                _errorMessage = "'From' must be earlier than 'To'.";
+                return;
+            }
+
+            var requestId = string.IsNullOrWhiteSpace(_requestId) ? null : _requestId.Trim();
+
+            await foreach (var record in AuditReader.QueryAsync(_streamName, FromUtc, ToUtc, requestId, ct))
+            {
+                _results.Add(record);
+                if (_results.Count >= _limit)
+                    break;
+                if (_results.Count % 50 == 0)
+                    await InvokeAsync(StateHasChanged);
+            }
+
+            if (_sortDescending)
+                _results = [.._results.OrderByDescending(r => r.Timestamp)];
+        }
+        catch (OperationCanceledException)
+        {
+            // User re-queried or navigated away
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Query failed: {ex.Message}";
+        }
+        finally
+        {
+            _isQuerying = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    void ToggleSort()
+    {
+        _sortDescending = !_sortDescending;
+        if (_results.Count > 0)
+            _results = _sortDescending
+                ? [.._results.OrderByDescending(r => r.Timestamp)]
+                : [.._results.OrderBy(r => r.Timestamp)];
+    }
+
+    void ToggleExpand(ulong seq) =>
+        _expandedSeq = _expandedSeq == seq ? 0 : seq;
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    static string FormatSize(int bytes)
+    {
+        if (bytes < 1024)
+        {
+            return $"{bytes} B";
+        }
+
+        if (bytes < 1024 * 1024)
+        {
+            return $"{bytes / 1024.0:F1} KB";
+        }
+
+        return $"{bytes / (1024.0 * 1024):F1} MB";
+    }
+
+    static string? GetPayloadJson(AuditRecord record)
+    {
+        if (record.Payload is not { Length: > 0 }) return null;
+        try   { return System.Text.Encoding.UTF8.GetString(record.Payload); }
+        catch { return $"<binary: {record.Payload.Length} bytes>"; }
+    }
+}

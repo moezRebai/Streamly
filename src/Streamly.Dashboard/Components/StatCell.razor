@@ -1,0 +1,16 @@
+@* Tiny label + value cell used in metric cards and instance cards *@
+
+<div style="display:flex; flex-direction:column; line-height:1.2;">
+    <MudText Typo="Typo.caption" Style="opacity:.5; font-size:.68rem; text-transform:uppercase; letter-spacing:.06em;">
+        @Label
+    </MudText>
+    <MudText Typo="Typo.body2" Style="@($"font-weight:600; {ValueStyle}")">
+        @Value
+    </MudText>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Label      { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Value      { get; set; } = string.Empty;
+    [Parameter]                 public string ValueStyle { get; set; } = string.Empty;
+}

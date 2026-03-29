@@ -1,0 +1,358 @@
+@page "/streams/{RequestId}"
+@rendermode InteractiveServer
+@inject InstanceRegistry Registry
+@inject NavigationManager Nav
+@inject IHttpClientFactory HttpFactory
+@using Streamly.Dashboard.Aggregation
+@using Streamly.Monitoring.Models
+
+<PageTitle>@(_stream?.StreamName ?? RequestId) — Streamly</PageTitle>
+
+@if (_stream is null)
+{
+    <div style="padding:32px; text-align:center;">
+        <MudText Typo="Typo.body2" Style="opacity:.4;">
+            Stream @RequestId not found.
+        </MudText>
+        <MudLink Href="/streams" Class="mt-2" Style="display:block;">
+            Back to Stream Browser
+        </MudLink>
+    </div>
+}
+else
+{
+    @* ── Header ───────────────────────────────────────────────────────────── *@
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:24px; flex-wrap:wrap;">
+
+        <MudIconButton Icon="@Icons.Material.Filled.ArrowBack"
+                       Size="Size.Small"
+                       Title="Back to instance"
+                       OnClick="@(() => Nav.NavigateTo(!string.IsNullOrEmpty(_fromInstanceId)
+                                    ? $"/instances/{_fromInstanceId}"
+                                    : _ownerInstance is not null
+                                        ? $"/instances/{_ownerInstance.Config.Id}"
+                                        : "/"))"/>
+
+        <MudText Typo="Typo.h6" Style="font-weight:600;">
+            @_stream.StreamName
+        </MudText>
+
+        @* Type badge *@
+        <MudChip T="string" Size="Size.Small"
+                 Style="background:rgba(128,128,128,.2); color:inherit; height:20px;" Class="ma-0">
+            @_stream.StreamName
+        </MudChip>
+
+        @* State badge *@
+        <MudChip T="string" Size="Size.Small"
+                 Style="@StateStyle(_stream.State)" Class="ma-0">
+            @_stream.State
+        </MudChip>
+
+        @* Request ID *@
+        <MudTooltip Text="@RequestId" Placement="Placement.Bottom">
+            <MudText Typo="Typo.caption"
+                     Style="font-family:monospace; font-size:.72rem; opacity:.5; cursor:default;">
+                @RequestId
+            </MudText>
+        </MudTooltip>
+
+        <MudSpacer/>
+
+        @* Owning instance link *@
+        @if (_ownerInstance is not null)
+        {
+            <MudChip T="string" Size="Size.Small" Class="ma-0"
+                     Style="background:rgba(128,128,128,.12); cursor:pointer;"
+                     OnClick="@(() => Nav.NavigateTo($"/instances/{_ownerInstance.Config.Id}"))">
+                <MudIcon Icon="@Icons.Material.Filled.Memory" Size="Size.Small" Class="mr-1"/>
+                @_ownerInstance.Config.Label
+            </MudChip>
+        }
+
+        <MudText Typo="Typo.caption" Style="opacity:.35;">
+            updated @FormatPolled(_lastRefreshed)
+        </MudText>
+    </div>
+
+    @* ── Metric cells ──────────────────────────────────────────────────────── *@
+    <MudGrid Spacing="3" Class="mb-6">
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Opened At"
+                          Value="@FormatTimestamp(_stream.OpenedAt)"
+                          ValueStyle="font-size:.95rem;"/>
+                <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                    @RelativeAge(_stream.OpenedAt)
+                </MudText>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Last Update"
+                          Value="@(_stream.LastPublishedAt is { } lp ? FormatTimestamp(lp) : "—")"
+                          ValueStyle="font-size:.95rem;"/>
+                <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                    @(_stream.LastPublishedAt is { } lp2 ? RelativeAge(lp2) : string.Empty)
+                </MudText>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Total Publishes"
+                          Value="@_stream.PublishCount.ToString("N0")"/>
+                <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                    skipped @_stream.SkipCount.ToString("N0")
+                    (@SkipPct.ToString("F1")%)
+                </MudText>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Subscribers"
+                          Value="@_stream.SubscriberCount.ToString()"/>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="First Response"
+                          Value="@(_stream.FirstResponseLatencyMs > 0 ? $"{_stream.FirstResponseLatencyMs:F1} ms" : "—")"
+                          ValueStyle="@(_stream.FirstResponseLatencyMs > 0 ? "color:#5b9bd5;" : "")"/>
+                <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                    time to first snapshot
+                </MudText>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="Latency (last)"
+                          Value="@(_stream.LastLatencyMs > 0 ? $"{_stream.LastLatencyMs:F1} ms" : "—")"/>
+                <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                    avg @(_stream.AvgLatencyMs > 0 ? $"{_stream.AvgLatencyMs:F1} ms" : "—")
+                </MudText>
+            </MudPaper>
+        </MudItem>
+
+    </MudGrid>
+
+    @* ── JSON viewers ──────────────────────────────────────────────────────── *@
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Class="mb-2"/>
+    }
+    <MudGrid Spacing="3">
+
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4" Style="height:100%;">
+                <MudText Typo="Typo.caption"
+                         Style="opacity:.5; text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:8px;">
+                    Request
+                </MudText>
+                <MudPaper Elevation="0"
+                          Style="background:rgba(0,0,0,.15); border-radius:6px; padding:12px;">
+                    <LatestImageViewer Json="@GetJsonString(_stream.RequestJson)"
+                                       MaxHeight="340px"/>
+                </MudPaper>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4" Style="height:100%;">
+                <MudText Typo="Typo.caption"
+                         Style="opacity:.5; text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:8px;">
+                    Latest Image
+                </MudText>
+                <MudPaper Elevation="0"
+                          Style="background:rgba(0,0,0,.15); border-radius:6px; padding:12px;">
+                    <LatestImageViewer Json="@GetJsonString(_stream.LatestImageJson)"
+                                       MaxHeight="340px"/>
+                </MudPaper>
+            </MudPaper>
+        </MudItem>
+
+    </MudGrid>
+}
+
+@code {
+    [Parameter] public string RequestId { get; set; } = string.Empty;
+
+    [SupplyParameterFromQuery(Name = "from")]
+    public string? FromInstanceId { get; set; }
+
+    string _fromInstanceId = string.Empty;
+
+    StreamDetailRecord?       _stream;
+    InstanceState?            _ownerInstance;
+    readonly List<InstanceState> _matchingInstances = [];
+    DateTimeOffset            _lastRefreshed = DateTimeOffset.UtcNow;
+    bool                      _loading       = true;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _fromInstanceId = FromInstanceId ?? string.Empty;
+
+        FindOwner();
+        await FetchFullAsync();
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── Data helpers ──────────────────────────────────────────────────────
+
+    /// <summary>Locate all instances that have this stream and pick the preferred owner (Publisher/Both).</summary>
+    void FindOwner()
+    {
+        _lastRefreshed = DateTimeOffset.UtcNow;
+        _matchingInstances.Clear();
+
+        foreach (var inst in Registry.All.Where(i => i.IsReachable))
+        {
+            var match = inst.Streams.FirstOrDefault(s => s.RequestId == RequestId);
+            if (match is null) continue;
+
+            _matchingInstances.Add(inst);
+
+            if (_ownerInstance is null || inst.Metrics?.InstanceRole is "Publisher" or "Both")
+            {
+                // Keep full record if already fetched; otherwise take the lite one temporarily
+                if (_stream?.RequestJson is null)
+                    _stream = match;
+                _ownerInstance = inst;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fetch the full stream record from all matching instances and merge.
+    /// Publisher instance provides RequestJson + LatestImageJson + publish counters.
+    /// Subscriber instance(s) provide latency metrics.
+    /// </summary>
+    async Task FetchFullAsync()
+    {
+        _loading = true;
+        try
+        {
+            if (_ownerInstance is null) return;
+
+            Console.WriteLine($"[StreamDetail] FetchFullAsync — matching instances: [{string.Join(", ", _matchingInstances.Select(i => $"{i.Config.Id}({i.Metrics?.InstanceRole})"))}]");
+
+            // Fetch from all matching instances in parallel, keeping instance context
+            var tasks = _matchingInstances
+                .Select(async inst => (inst, record: await FetchFromInstanceAsync(inst.Config.Id)))
+                .ToList();
+
+            var results = await Task.WhenAll(tasks);
+            var valid   = results.Where(x => x.record is not null).ToList();
+
+            if (valid.Count == 0) return;
+
+            // Publisher's record has RequestJson + LatestImageJson + publish counters
+            var publisherResult = valid.FirstOrDefault(x =>
+                x.inst.Metrics?.InstanceRole is "Publisher" or "Both");
+            var merged = (publisherResult.record ?? valid[0].record)!;
+
+            // Overlay latency fields from whichever instance recorded them (subscriber side)
+            var firstResponseMs = valid.Max(x => x.record!.FirstResponseLatencyMs);
+            var lastLatencyMs   = valid.Max(x => x.record!.LastLatencyMs);
+            var avgLatencyMs    = valid.Max(x => x.record!.AvgLatencyMs);
+
+            _stream = merged with
+            {
+                FirstResponseLatencyMs = firstResponseMs,
+                LastLatencyMs          = lastLatencyMs,
+                AvgLatencyMs           = avgLatencyMs
+            };
+        }
+        catch
+        {
+            // leave _stream as-is (lite record from registry)
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    async Task<StreamDetailRecord?> FetchFromInstanceAsync(string instanceId)
+    {
+        try
+        {
+            var client = HttpFactory.CreateClient($"instance-{instanceId}");
+            var url    = $"/streamly/streams/{RequestId}";
+
+            var response = await client.GetAsync(url);
+            var body     = await response.Content.ReadAsStringAsync();
+
+            Console.WriteLine($"[StreamDetail] GET {instanceId}{url} → {(int)response.StatusCode}");
+            Console.WriteLine($"[StreamDetail] Body: {body}");
+
+            if (!response.IsSuccessStatusCode) return null;
+
+            return System.Text.Json.JsonSerializer.Deserialize<StreamDetailRecord>(
+                body,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StreamDetail] ERROR fetching from {instanceId}: {ex.Message}");
+            return null;
+        }
+    }
+
+    // ── Derived ───────────────────────────────────────────────────────────
+
+    double SkipPct
+    {
+        get
+        {
+            if (_stream is null) return 0;
+            long total = _stream.PublishCount + _stream.SkipCount;
+            return total == 0 ? 0 : (double)_stream.SkipCount / total * 100;
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    static string FormatTimestamp(DateTimeOffset dt) =>
+        dt.ToLocalTime().ToString("dd MMM yyyy HH:mm:ss");
+
+    static string FormatPolled(DateTimeOffset dt)
+    {
+        var age = DateTimeOffset.UtcNow - dt;
+        return age.TotalSeconds < 5 ? "just now" : $"{(int)age.TotalSeconds}s ago";
+    }
+
+    static string RelativeAge(DateTimeOffset dt)
+    {
+        var age = DateTimeOffset.UtcNow - dt;
+        if (age.TotalDays >= 1)    return $"{(int)age.TotalDays}d {age.Hours}h ago";
+        if (age.TotalHours >= 1)   return $"{(int)age.TotalHours}h {age.Minutes}m ago";
+        if (age.TotalMinutes >= 1) return $"{(int)age.TotalMinutes}m {age.Seconds}s ago";
+        return age.TotalSeconds < 5 ? "just now" : $"{(int)age.TotalSeconds}s ago";
+    }
+
+    static string? GetJsonString(object? raw)
+    {
+        if (raw is null) return null;
+        if (raw is string s) return s;
+        if (raw is System.Text.Json.JsonElement el) return el.GetRawText();
+        return raw.ToString();
+    }
+
+    static string StateStyle(string state) => state switch
+    {
+        "Streaming" => "background:#3B6D11; color:#fff; height:20px;",
+        "Closing"   => "background:#c62828; color:#fff; height:20px;",
+        _           => "background:rgba(128,128,128,.3); color:inherit; height:20px;"
+    };
+}
