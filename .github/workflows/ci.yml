@@ -29,13 +29,24 @@ jobs:
 
       - name: Pack (dry run — verify packages build correctly)
         run: |
-          dotnet pack --configuration Release --no-build \
-            /p:Version=0.0.0-ci \
-            --output ./nupkgs
+          for proj in \
+            src/Streamly.Core/Streamly.Core.csproj \
+            src/Streamly.Infrastructure/Streamly.Infrastructure.csproj \
+            src/Streamly.Server/Streamly.Server.csproj \
+            src/Streamly.Client/Streamly.Client.csproj \
+            src/Streamly/Streamly.csproj \
+            src/Streamly.Audit/Streamly.Audit.csproj \
+            src/Streamly.Monitoring/Streamly.Monitoring.csproj; do
+            dotnet pack "$proj" --configuration Release --no-build \
+              /p:Version=0.0.0-ci \
+              --output ./nupkgs
+          done
 
       - name: Upload packages as artifact
         uses: actions/upload-artifact@v4
         with:
           name: nupkgs-ci
-          path: ./nupkgs/*.nupkg
+          path: |
+            ./nupkgs/*.nupkg
+            ./nupkgs/*.snupkg
           retention-days: 3

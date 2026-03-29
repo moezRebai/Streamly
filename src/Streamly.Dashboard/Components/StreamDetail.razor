@@ -266,11 +266,19 @@ else
             var lastLatencyMs   = valid.Max(x => x.record!.LastLatencyMs);
             var avgLatencyMs    = valid.Max(x => x.record!.AvgLatencyMs);
 
+            // LatestImageJson is only populated on the leader (follower never calls
+            // RecordLatestImage). Pick it from whichever instance has it, regardless
+            // of which instance was chosen as the base merged record.
+            var latestImageJson = valid
+                .Select(x => x.record!.LatestImageJson)
+                .FirstOrDefault(j => j is not null);
+
             _stream = merged with
             {
                 FirstResponseLatencyMs = firstResponseMs,
                 LastLatencyMs          = lastLatencyMs,
-                AvgLatencyMs           = avgLatencyMs
+                AvgLatencyMs           = avgLatencyMs,
+                LatestImageJson        = latestImageJson
             };
         }
         catch

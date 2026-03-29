@@ -60,7 +60,7 @@ public class SwapSubscriberWorker(
     {
         logger.LogInformation("SwapSubscriberWorker starting — subscribing to 2000 IRS streams");
 
-        foreach (var request in GenerateRequests().Take(5))
+        foreach (var request in GenerateRequests().Take(2000))
         {
             var label = $"{request.Tenor} {request.Notional / 1_000_000:N0}M";
 

@@ -4,10 +4,11 @@
         <TargetFramework>net9.0</TargetFramework>
         <PackageId>Streamly.Server</PackageId>
         <Description>
-            Publisher-side runtime for Streamly. Handles stream lifecycle,
-            leader election, change detection, keepalive, and response
-            publishing over NATS JetStream.
+            Internal publisher-side runtime for the Streamly distributed
+            streaming library. This is an implementation package — reference
+            the Streamly package instead.
         </Description>
+        <PackageTags>streaming;nats;finance;fx;realtime;distributed;internal</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>

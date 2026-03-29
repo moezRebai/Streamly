@@ -33,7 +33,7 @@ public class SpotSubscriberWorker(
          from q in Quotes
          where b != q
          select $"{b}/{q}")
-        .Take(5);
+        .Take(2000);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

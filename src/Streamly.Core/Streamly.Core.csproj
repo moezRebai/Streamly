@@ -4,9 +4,11 @@
         <TargetFramework>net9.0</TargetFramework>
         <PackageId>Streamly.Core</PackageId>
         <Description>
-            Core abstractions and models for the Streamly distributed
-            real-time streaming library.
+            Internal abstractions and models for the Streamly distributed
+            real-time streaming library. This is an implementation package —
+            reference the Streamly package instead.
         </Description>
+        <PackageTags>streaming;nats;finance;fx;realtime;distributed;internal</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>

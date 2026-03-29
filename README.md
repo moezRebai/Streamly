@@ -9,6 +9,7 @@ A distributed, real-time streaming library for .NET 9 built on [NATS JetStream](
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
+- [Screenshots](#screenshots)
 - [Solution Structure](#solution-structure)
 - [Getting Started](#getting-started)
 - [Publisher Side](#publisher-side)
@@ -27,31 +28,56 @@ A distributed, real-time streaming library for .NET 9 built on [NATS JetStream](
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        NATS JetStream                           │
-│  streams.requests.*   streams.responses.*   streams.keepalive.* │
-│  streams.confirmations.*        KV: STREAMLY_ELECTION_*         │
-└─────────────────────────────────────────────────────────────────┘
-         ▲                    │                    ▲
-         │  subscribe         │  publish           │  subscribe
-         │                    ▼                    │
-┌────────────────┐   ┌────────────────┐   ┌────────────────────┐
-│   Publisher A  │   │   Publisher B  │   │     Subscriber     │
-│   (LEADER ★)  │   │   (Follower)   │   │                    │
-│                │   │                │   │  IStreamingSubscriber│
-│ Handler runs   │   │ Handler idle,  │   │  Subscribe(request)│
-│ Publishes data │   │ ready for      │   │  → IObservable<T>  │
-│ Renews KV lock │   │ failover       │   │                    │
-└────────────────┘   └────────────────┘   └────────────────────┘
+╔══════════════════════════════════════════════════════════════════════╗
+║                         NATS  JetStream                              ║
+║                                                                      ║
+║   streams.requests.*          streams.responses.*                    ║
+║   streams.confirmations.*     streams.keepalive.*                    ║
+║   KV: STREAMLY_ELECTION_*     audit.*                                ║
+╚══════════════╤═══════════════════════╤══════════════════╤════════════╝
+               │                       │                  │
+    ┌──────────┴──────────┐            │       ┌──────────┴──────────┐
+    │                     │            │       │                     │
+    ▼                     ▼            ▼       ▼                     ▼
+╔═══════════════╗   ╔═══════════════╗      ╔═══════════════════════════╗
+║  Publisher A  ║   ║  Publisher B  ║      ║       Subscriber          ║
+║               ║   ║               ║      ║                           ║
+║  ★ LEADER     ║   ║   FOLLOWER    ║      ║  IStreamingSubscriber<T>  ║
+║  ───────────  ║   ║  ───────────  ║      ║  ─────────────────────    ║
+║  Runs handler ║   ║  Runs handler ║      ║  Subscribe(request)       ║
+║  Publishes    ║   ║  Stays warm   ║      ║  → IObservable<TResponse> ║
+║  Renews lock  ║   ║  Auto-promote ║      ║  Auto-reconnect + merge   ║
+╚═══════════════╝   ╚═══════════════╝      ╚═══════════════════════════╝
+        │                   │                          ▲
+        │  < 3s failover    │                          │
+        └───────────────────┘              Delta compression + epoch
+          KV TTL auto-expiry                    fencing on receive
 ```
 
-**Key concepts:**
+| Concept | Description |
+|---------|-------------|
+| **Push-based** | Handlers push data continuously — no polling, no request-response |
+| **Leader election** | One active publisher at a time via NATS KV atomic lock with TTL |
+| **Warm standby** | Followers run handlers and hold latest state, ready to take over in < 3s |
+| **Delta compression** | Only changed fields sent over the wire; subscribers merge into a local image |
+| **Epoch fencing** | Each term has a monotonically increasing epoch — stale messages from dead leaders are discarded |
+| **Transparent reconnect** | Subscribers automatically reconnect with exponential backoff |
 
-- **Push-based** — Handlers push data to subscribers continuously; no polling.
-- **Leader election** — Only one publisher instance is active at a time. Others stand by and take over if the leader dies (< 3 second failover).
-- **Delta compression** — Only changed fields are sent over the wire. Subscribers maintain a local image and merge incoming deltas.
-- **Transparent reconnection** — Subscribers automatically reconnect with configurable exponential backoff.
-- **Epoch fencing** — Each leadership term has a monotonically increasing epoch. Stale messages from dead leaders are silently discarded.
+---
+
+## Screenshots
+
+### Cluster Overview
+![Cluster Overview](docs/images/dashboard-overview.png)
+
+### Instance Detail
+![Instance Detail](docs/images/dashboard-instance.png)
+
+### Request Detail
+![Request Detail](docs/images/dashboard-request-details.png)
+
+### Audit Viewer
+![Audit Viewer](docs/images/dashboard-audit.png)
 
 ---
 

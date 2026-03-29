@@ -4,9 +4,11 @@
         <TargetFramework>net9.0</TargetFramework>
         <PackageId>Streamly.Infrastructure</PackageId>
         <Description>
-            NATS JetStream transport and leader election implementation
-            for the Streamly distributed streaming library.
+            Internal NATS JetStream transport and leader election implementation
+            for the Streamly distributed streaming library. This is an
+            implementation package — reference the Streamly package instead.
         </Description>
+        <PackageTags>streaming;nats;finance;fx;realtime;distributed;internal</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>
