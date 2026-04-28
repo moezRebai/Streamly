@@ -19,8 +19,8 @@ internal class StreamlyHostedService(
     : IHostedService
 {
     // Holds the started managers for clean shutdown
-    private readonly List<(string StreamName, object Manager)> _startedManagers = new();
-    private readonly List<KeepaliveService> _keepaliveServices = new();
+    private readonly List<IRequestManager> _startedManagers = [];
+    private readonly List<KeepaliveService> _keepaliveServices = [];
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -32,17 +32,15 @@ internal class StreamlyHostedService(
         {
             try
             {
-                // Resolve IRequestManager<TRequest, TResponse> for this stream
+                // Resolve IRequestManager<TRequest, TResponse> and upcast to the non-generic base
                 var managerType = typeof(IRequestManager<,>)
                     .MakeGenericType(handler.RequestType, handler.ResponseType);
 
-                var manager = serviceProvider.GetRequiredService(managerType);
+                var manager = (IRequestManager)serviceProvider.GetRequiredService(managerType);
 
-                // Call StartAsync via reflection (manager is a non-generic reference)
-                var startMethod = managerType.GetMethod(nameof(IRequestManager<object, object>.StartAsync))!;
-                await (Task)startMethod.Invoke(manager, [cancellationToken])!;
+                await manager.StartAsync(cancellationToken);
 
-                _startedManagers.Add((handler.StreamName, manager));
+                _startedManagers.Add(manager);
 
                 // Start keepalive for this stream
                 var keepalive = await serviceProvider.GetRequiredService<KeepaliveServiceFactory>()
@@ -84,23 +82,21 @@ internal class StreamlyHostedService(
         }
 
         // Stop in reverse order
-        foreach (var (streamName, manager) in _startedManagers.AsEnumerable().Reverse())
+        foreach (var manager in _startedManagers.AsEnumerable().Reverse())
         {
             try
             {
-                var managerType = manager.GetType();
-                var stopMethod = managerType.GetMethod("StopAsync")!;
-                await (Task)stopMethod.Invoke(manager, [cancellationToken])!;
+                await manager.StopAsync(cancellationToken);
 
                 logger.LogInformation(
                     "Stopped RequestManager for stream '{StreamName}'",
-                    streamName);
+                    manager.StreamName);
             }
             catch (Exception ex)
             {
                 logger.LogError(ex,
                     "Error stopping RequestManager for stream '{StreamName}'",
-                    streamName);
+                    manager.StreamName);
             }
         }
 

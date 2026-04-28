@@ -222,7 +222,10 @@ else
 
             _matchingInstances.Add(inst);
 
-            if (_ownerInstance is null || inst.Metrics?.InstanceRole is "Publisher" or "Both")
+            bool isBetterOwner = _ownerInstance is null ||
+                inst.Metrics?.InstanceRole is "Publisher" or "Both";
+
+            if (isBetterOwner)
             {
                 // Keep full record if already fetched; otherwise take the lite one temporarily
                 if (_stream?.RequestJson is null)
@@ -256,7 +259,9 @@ else
 
             if (valid.Count == 0) return;
 
-            // Publisher's record has RequestJson + LatestImageJson + publish counters
+            // Pick any Publisher/Both instance as base — publish counters, RequestJson and
+            // LastPublishedAt are then overlaid individually by taking the best value across
+            // all instances, so it doesn't matter which instance is chosen as the base.
             var publisherResult = valid.FirstOrDefault(x =>
                 x.inst.Metrics?.InstanceRole is "Publisher" or "Both");
             var merged = (publisherResult.record ?? valid[0].record)!;
@@ -266,19 +271,27 @@ else
             var lastLatencyMs   = valid.Max(x => x.record!.LastLatencyMs);
             var avgLatencyMs    = valid.Max(x => x.record!.AvgLatencyMs);
 
-            // LatestImageJson is only populated on the leader (follower never calls
-            // RecordLatestImage). Pick it from whichever instance has it, regardless
-            // of which instance was chosen as the base merged record.
-            var latestImageJson = valid
-                .Select(x => x.record!.LatestImageJson)
-                .FirstOrDefault(j => j is not null);
+            // These fields are only populated on the leader — pick from whichever instance has them.
+            var latestImageJson = valid.Select(x => x.record!.LatestImageJson).FirstOrDefault(j => j is not null);
+            var requestJson     = valid.Select(x => x.record!.RequestJson).FirstOrDefault(j => j is not null);
+            var publishCount    = valid.Max(x => x.record!.PublishCount);
+            var skipCount       = valid.Max(x => x.record!.SkipCount);
+            var lastPublishedAt = valid
+                .Select(x => x.record!.LastPublishedAt)
+                .Where(d => d != default)
+                .DefaultIfEmpty()
+                .Max();
 
             _stream = merged with
             {
                 FirstResponseLatencyMs = firstResponseMs,
                 LastLatencyMs          = lastLatencyMs,
                 AvgLatencyMs           = avgLatencyMs,
-                LatestImageJson        = latestImageJson
+                LatestImageJson        = latestImageJson,
+                RequestJson            = requestJson,
+                PublishCount           = publishCount,
+                SkipCount              = skipCount,
+                LastPublishedAt        = lastPublishedAt
             };
         }
         catch

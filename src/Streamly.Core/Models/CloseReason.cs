@@ -33,5 +33,10 @@ public enum CloseReason
     /// <summary>
     /// Service shutting down
     /// </summary>
-    Shutdown = 5
+    Shutdown = 5,
+
+    /// <summary>
+    /// No cluster accepted the request — all clusters either filtered it out or are offline.
+    /// </summary>
+    NoProvider = 6
 }

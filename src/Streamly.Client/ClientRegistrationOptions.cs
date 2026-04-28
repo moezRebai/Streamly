@@ -57,17 +57,19 @@ public class ClientRegistrationOptions
         // Register StreamingSubscriber behind public interface (singleton per TRequest/TResponse)
         _services.TryAddSingleton<IStreamingSubscriber<TRequest, TResponse>>(sp =>
         {
-            var manager      = sp.GetRequiredService<SubscriptionManager<TRequest, TResponse>>();
-            var transport    = sp.GetRequiredService<IStreamingTransport>();
-            var subjects     = sp.GetRequiredService<ISubjectResolver>();
-            var serializer   = sp.GetRequiredService<IMessageSerializer>();
-            var options      = sp.GetRequiredService<IOptions<StreamlySettings>>();
+            var manager       = sp.GetRequiredService<SubscriptionManager<TRequest, TResponse>>();
+            var transport     = sp.GetRequiredService<IStreamingTransport>();
+            var subjects      = sp.GetRequiredService<ISubjectResolver>();
+            var serializer    = sp.GetRequiredService<IMessageSerializer>();
+            var metrics       = sp.GetRequiredService<IStreamlyMetricsCollector>();
+            var options       = sp.GetRequiredService<IOptions<StreamlySettings>>();
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
 
             return new StreamingSubscriber<TRequest, TResponse>(
                 streamName,
                 manager,
                 serializer,
+                metrics,
                 transport,
                 subjects,
                 options,

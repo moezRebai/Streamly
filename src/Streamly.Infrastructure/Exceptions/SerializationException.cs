@@ -1,4 +1,4 @@
-namespace Streamly.Infrastructure.Execptions;
+namespace Streamly.Infrastructure.Exceptions;
 
 /// <summary>
 ///     Exception thrown when serialization or deserialization fails

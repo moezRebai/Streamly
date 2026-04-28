@@ -54,7 +54,8 @@ public sealed class NatsLeaderElection : ILeaderElection
         IOptions<StreamlySettings> runtimeOptions,
         ISubjectResolver subjectResolver,
         ILogger<NatsLeaderElection> logger,
-        string streamName)
+        string streamName,
+        string clusterId = "default")
     {
         _transport = transport;
         _runtimeOptions = runtimeOptions;
@@ -62,7 +63,9 @@ public sealed class NatsLeaderElection : ILeaderElection
         _options = options.Value;
         _logger = logger;
         _streamName = streamName ?? throw new ArgumentNullException(nameof(streamName));
-        _leaderKey = $"leader.{_streamName}";
+        // Scope the KV key by cluster so independent clusters never interfere with each other.
+        // leader.SpotPricing.cluster-ab and leader.SpotPricing.cluster-cd are separate elections.
+        _leaderKey = $"leader.{_streamName}.{clusterId}";
     }
 
     public bool IsLeader => _isLeader;

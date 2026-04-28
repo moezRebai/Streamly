@@ -55,7 +55,7 @@ public static class StreamlyServerServiceCollectionExtensions
         // 3. Register NATS Infrastructure
         services.AddNatsPublisherInfrastructure(configuration.GetSection("Streamly:Nats"));
         services.TryAddSingleton<ISubjectResolver, NatsSubjectResolver>();
-        services.TryAddSingleton<IMessageSerializer, MessageSerializer>();
+        services.TryAddSingleton<IMessageSerializer, DefaultMessageSerializer>();
 
         // 4. Register Runtime core services (transport-agnostic)
         services.AddSingleton(options);

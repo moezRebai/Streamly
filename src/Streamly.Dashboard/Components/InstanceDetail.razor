@@ -81,10 +81,12 @@ else
     <MudGrid Spacing="3" Class="mb-6">
 
         <MudItem xs="6" sm="3">
-            <MudPaper Class="pa-4" Elevation="2">
-                <StatCell Label="Active Streams"
-                          Value="@(_state.Metrics?.ActiveStreams.ToString() ?? "—")"/>
-            </MudPaper>
+            <MudTooltip Text="Subscriber streams / Publisher streams">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <StatCell Label="Streams (Sub / Pub)"
+                              Value="@(_state.Metrics is null ? "—" : $"{_state.Metrics.SubscriberActiveStreams} / {_state.Metrics.PublisherActiveStreams}")"/>
+                </MudPaper>
+            </MudTooltip>
         </MudItem>
 
         <MudItem xs="6" sm="3">
@@ -96,17 +98,43 @@ else
 
         <MudItem xs="6" sm="3">
             <MudPaper Class="pa-4" Elevation="2">
-                <StatCell Label="Subscriptions"
-                          Value="@(_state.Metrics?.ActiveSubscriptions.ToString() ?? "—")"/>
-            </MudPaper>
-        </MudItem>
-
-        <MudItem xs="6" sm="3">
-            <MudPaper Class="pa-4" Elevation="2">
                 <StatCell Label="Uptime"
                           Value="@FormatUptime(_state.Metrics?.StartedAt)"/>
             </MudPaper>
         </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudTooltip Text="@(_state.Metrics is null ? "" : $"GC heap: {FormatBytes(_state.Metrics.GcHeapBytes)}")">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <StatCell Label="Memory (Working Set)"
+                              Value="@(_state.Metrics is null ? "—" : FormatBytes(_state.Metrics.WorkingSetBytes))"/>
+                </MudPaper>
+            </MudTooltip>
+        </MudItem>
+
+        <MudItem xs="6" sm="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <StatCell Label="CPU"
+                          Value="@(_state.Metrics is null ? "—" : $"{_state.Metrics.CpuPercent:F1}%")"
+                          ValueStyle="@(_state.Metrics?.CpuPercent > 80 ? "color:#ef9a9a; font-weight:600;" : "")"/>
+                <MudText Typo="Typo.caption" Style="opacity:.4; margin-top:2px;">
+                    @Environment.ProcessorCount core(s) · 5 s window
+                </MudText>
+            </MudPaper>
+        </MudItem>
+
+        @if (_state.Metrics?.TotalConfirmationFailures > 0)
+        {
+            <MudItem xs="6" sm="3">
+                <MudTooltip Text="All retry attempts exhausted — affected subscribers fell back to their own reconnection timeout. Investigate NATS transport stability.">
+                    <MudPaper Class="pa-4" Elevation="2" Style="border: 1px solid #ef9a9a;">
+                        <StatCell Label="Confirmation Failures"
+                                  Value="@(_state.Metrics.TotalConfirmationFailures.ToString())"
+                                  ValueStyle="color:#ef9a9a; font-weight:600;"/>
+                    </MudPaper>
+                </MudTooltip>
+            </MudItem>
+        }
 
     </MudGrid>
 
@@ -336,4 +364,12 @@ else
                 ? $"{(int)up.TotalHours}h {up.Minutes}m"
                 : $"{up.Minutes}m {up.Seconds}s";
     }
+
+    static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1024 * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):F1} GB",
+        >= 1024 * 1024        => $"{bytes / (1024.0 * 1024):F0} MB",
+        >= 1024               => $"{bytes / 1024.0:F0} KB",
+        _                     => $"{bytes} B"
+    };
 }

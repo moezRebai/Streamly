@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Streamly.Core.Abstractions;
 using Streamly.Server.Leadership;
 using Streamly.Server.Publishing.Interfaces;
 
@@ -10,6 +11,7 @@ namespace Streamly.Server.Publishing;
 internal class ConfirmationQueueFactory(
     ILeaderElectionFactory leaderElectionFactory,
     IConfirmationPublisherFactory confirmationPublisherFactory,
+    IStreamlyMetricsCollector metrics,
     ILoggerFactory loggerFactory)
     : IConfirmationQueueFactory
 {
@@ -19,8 +21,10 @@ internal class ConfirmationQueueFactory(
         var publisher = await confirmationPublisherFactory.CreateAsync(streamName);
 
         return new ConfirmationQueue(
+            streamName,
             publisher,
             leaderElection,
+            metrics,
             loggerFactory.CreateLogger<ConfirmationQueue>());
     }
 }

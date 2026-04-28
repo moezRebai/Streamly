@@ -32,7 +32,7 @@ public class SpotSubscriberWorker(
         (from b in Bases
          from q in Quotes
          where b != q
-         select $"{b}/{q}")
+         select $"{b}{q}")
         .Take(2000);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -43,7 +43,8 @@ public class SpotSubscriberWorker(
         {
             var capturedPair = pair;
 
-            var sub = subscriber
+            Console.WriteLine(pair);
+            var spotStream = subscriber
                 .Subscribe(
                     new SpotRequest { CurrencyPair = capturedPair },
                     behavior: StreamBehavior.Live,
@@ -55,7 +56,9 @@ public class SpotSubscriberWorker(
                             logger.LogInformation("[Spot] {Pair} restored after {Attempts} attempt(s)", capturedPair, status.RetryAttempt);
                         else if (status.State == StreamState.Failed)
                             logger.LogError("[Spot] {Pair} permanently failed — {Message}", capturedPair, status.Message);
-                    })
+                    });
+            
+            var disposable = spotStream
                 .Subscribe(
                     onNext: price =>
                         logger.LogTrace("[Spot] {Pair} Bid={Bid:F5} Ask={Ask:F5}", price.CurrencyPair, price.Bid, price.Ask),
@@ -64,7 +67,7 @@ public class SpotSubscriberWorker(
                     onCompleted: () =>
                         logger.LogDebug("[Spot] {Pair} completed", capturedPair));
 
-            _subscriptions.Add(sub);
+            _subscriptions.Add(disposable);
 
             await Task.Delay(5, stoppingToken);
         }

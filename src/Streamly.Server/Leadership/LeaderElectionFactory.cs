@@ -67,7 +67,8 @@ public class LeaderElectionFactory(
             _options,
             _subjectResolver,
             _loggerFactory.CreateLogger<NatsLeaderElection>(),
-            streamName);
+            streamName,
+            _options.Value.ClusterId);
 
         return new StreamLeadershipCoordinator(
             streamName,

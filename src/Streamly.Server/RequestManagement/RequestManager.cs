@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
@@ -37,6 +38,7 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
     private readonly string _requestsSubject;
     private readonly string _batchSubject;
     private readonly IStreamlyMetricsCollector _metrics;
+    private readonly IClusterAffinityFilter<TRequest>? _affinityFilter;
 
     private CancellationTokenSource? _batchSyncCts;
     private Task? _batchSyncTask;
@@ -79,7 +81,8 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         IConfirmationQueueFactory confirmationQueueFactory,
         ILoggerFactory loggerFactory,
         IMessageSerializer serializer,
-        IStreamlyMetricsCollector metrics)
+        IStreamlyMetricsCollector metrics,
+        IServiceProvider serviceProvider)
     {
         _streamName = streamRegistry.GetStreamName<TRequest>();
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -96,6 +99,9 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _subjects = subjects ?? throw new ArgumentNullException(nameof(subjects));
         _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
+
+        // Optional — null when no filter is registered (cluster accepts all requests)
+        _affinityFilter = serviceProvider.GetService<IClusterAffinityFilter<TRequest>>();
 
         // Stocker la factory — GetOrCreateAsync sera appelé dans StartAsync (fix #1)
         _leaderElectionFactory = leaderElectionFactory
@@ -1090,6 +1096,15 @@ internal class RequestManager<TRequest, TResponse> : IRequestManager<TRequest, T
                 "Received {Behavior} request for stream '{StreamName}'",
                 envelope.Behavior,
                 _streamName);
+
+            // Cluster affinity check — skip silently if this cluster is not responsible
+            if (_affinityFilter is not null && !_affinityFilter.Accepts(envelope.Request))
+            {
+                _logger.LogDebug(
+                    "Request for stream '{StreamName}' rejected by cluster affinity filter — not handled by this cluster",
+                    _streamName);
+                return;
+            }
 
             // Open request (idempotent - same request = same RequestId)
             // ALL instances do this (for failover readiness)

@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Hosting;
 using Serilog;
 using Streamly;
 using Streamly.FakeSubscriber;
+using Streamly.Infrastructure.Interfaces;
+using Streamly.Infrastructure.Serialization;
 using Streamly.Monitoring;
 
 Log.Logger = new LoggerConfiguration()
@@ -30,6 +32,8 @@ var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
     {
         services.AddRouting();
+
+        services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
 
         services.AddStreamly(context.Configuration, options =>
         {

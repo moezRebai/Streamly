@@ -1,32 +1,39 @@
 namespace Streamly.Infrastructure.Interfaces;
 
 /// <summary>
-///     Serializes objects to bytes for Redis transport.
-///     Infrastructure layer - just serialization, no business logic.
+/// Single serialization contract for the Streamly pipeline.
+///
+/// Two distinct output forms:
+///
+///   Serialize / Deserialize  — compact camelCase bytes for NATS transport.
+///                              Nulls are omitted (WhenWritingNull) to keep
+///                              delta payloads small.
+///
+///   SerializeToJson          — human-readable JSON string for monitoring and
+///                              dashboard display. All fields are included
+///                              (Never ignore nulls) so the full state is visible.
+///                              The dashboard re-pretty-prints on read; storage
+///                              stays compact (WriteIndented = false).
 /// </summary>
 public interface IMessageSerializer
 {
-    /// <summary>
-    ///     Serialize an object to bytes
-    /// </summary>
-    /// <typeparam name="T">Type to serialize</typeparam>
-    /// <param name="obj">Object to serialize</param>
-    /// <returns>Serialized bytes</returns>
+    // ── Transport ─────────────────────────────────────────────────────────────
+
+    /// <summary>Serialize to compact camelCase bytes for NATS transport.</summary>
     byte[] Serialize<T>(T obj);
 
-    /// <summary>
-    ///     Deserialize bytes to an object
-    /// </summary>
-    /// <typeparam name="T">Type to deserialize to</typeparam>
-    /// <param name="data">Serialized data</param>
-    /// <returns>Deserialized object</returns>
+    /// <summary>Deserialize from NATS transport bytes.</summary>
     T Deserialize<T>(byte[] data);
 
-    /// <summary>
-    ///     Deserialize bytes to an object (ReadOnlySpan overload for zero-copy)
-    /// </summary>
-    /// <typeparam name="T">Type to deserialize to</typeparam>
-    /// <param name="data">Serialized data</param>
-    /// <returns>Deserialized object</returns>
+    /// <summary>Deserialize from NATS transport bytes (zero-copy span overload).</summary>
     T Deserialize<T>(ReadOnlySpan<byte> data);
+
+    // ── Display ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Serialize to a compact JSON string for monitoring storage.
+    /// Uses PascalCase property names and includes all fields (no null suppression)
+    /// so every field is visible in the dashboard regardless of value.
+    /// </summary>
+    string SerializeToJson<T>(T obj);
 }

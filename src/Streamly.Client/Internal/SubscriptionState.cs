@@ -12,6 +12,12 @@ internal class SubscriptionState<TResponse>
     // response to the right pending subscription.
     public string CorrelationId { get; init; } = string.Empty;
     public string? RequestId { get; set; }
+
+    /// <summary>
+    /// Ephemeral GUID assigned before confirmation so the subscription is visible in monitoring
+    /// even if no publisher ever responds. Replaced by RequestId on confirmation.
+    /// </summary>
+    public string? TrackingId { get; set; }
     public object? Request { get; init; }
     public StreamBehavior Behavior { get; init; }
     public Subject<TResponse> Subject { get; } = new();

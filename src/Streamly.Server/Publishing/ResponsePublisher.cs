@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
@@ -309,7 +308,7 @@ internal class ResponsePublisher<TRequest, TResponse>(
             _metrics.RecordLatestImage(
                 requestId,
                 _streamName,
-                JsonSerializer.Serialize(latestImage));
+                _serializer.SerializeToJson(latestImage));
 
 
             await _auditSink.RecordAsync(new AuditRecord

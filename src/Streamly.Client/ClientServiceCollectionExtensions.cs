@@ -36,7 +36,7 @@ public static class ClientServiceCollectionExtensions
         // 2. Register NATS Infrastructure
         services.AddNatsSubscriberInfrastructure(configuration.GetSection("Streamly:Nats"));
         services.TryAddSingleton<ISubjectResolver, NatsSubjectResolver>();
-        services.TryAddSingleton<IMessageSerializer, MessageSerializer>();
+        services.TryAddSingleton<IMessageSerializer, DefaultMessageSerializer>();
 
         // 3. Apply per-stream subscriber registrations
         var registrationOptions = new ClientRegistrationOptions(services);

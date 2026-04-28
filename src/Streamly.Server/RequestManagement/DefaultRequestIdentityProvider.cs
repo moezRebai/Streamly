@@ -7,10 +7,6 @@ using Streamly.Core.Models;
 
 namespace Streamly.Server.RequestManagement;
 
-/// <summary>
-/// Default implementation using JSON serialization + SHA256 hashing.
-/// Includes StreamBehavior in hash to differentiate Live vs Snapshot for same request payload.
-/// </summary>
 public class DefaultRequestIdentityProvider<TRequest> : IRequestIdentityProvider<TRequest>
 {
     private static readonly JsonSerializerOptions SerializerOptions = new()

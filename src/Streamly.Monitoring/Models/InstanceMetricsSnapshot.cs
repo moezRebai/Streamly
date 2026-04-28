@@ -71,6 +71,25 @@ public sealed record InstanceMetricsSnapshot
     /// <summary>Number of subscriptions currently active on this instance.</summary>
     public required int ActiveSubscriptions { get; init; }
 
+    /// <summary>
+    /// Number of subscriptions in the Pending state — attempted but not yet confirmed by any publisher.
+    /// Included in ActiveStreams. A non-zero value on a subscriber instance indicates streams for which
+    /// no cluster has accepted the request.
+    /// </summary>
+    public int PendingSubscriptions { get; init; }
+
+    /// <summary>
+    /// Active subscriber-side streams: confirmed subscriptions + pending (unconfirmed) attempts.
+    /// Zero on a pure publisher instance.
+    /// </summary>
+    public int SubscriberActiveStreams { get; init; }
+
+    /// <summary>
+    /// Active publisher-side streams: unique requests currently being served.
+    /// Zero on a pure subscriber instance.
+    /// </summary>
+    public int PublisherActiveStreams { get; init; }
+
     /// <summary>Total subscriptions opened since process start.</summary>
     public required long TotalSubscriptionsOpened { get; init; }
 
@@ -88,4 +107,25 @@ public sealed record InstanceMetricsSnapshot
 
     /// <summary>Total reconnection attempts since process start.</summary>
     public required long TotalReconnectionAttempts { get; init; }
+
+    /// <summary>
+    /// Total confirmation send failures since process start (all retries exhausted).
+    /// Each increment means a subscriber will fall back to its own reconnection timeout.
+    /// A non-zero value warrants investigating NATS transport stability.
+    /// </summary>
+    public required long TotalConfirmationFailures { get; init; }
+
+    // ── Process — CPU and memory ──────────────────────────────────────────────
+
+    /// <summary>
+    /// CPU usage % across all logical cores, averaged over the last 5-second sample window.
+    /// 0 until the first background sample completes (~5 s after startup).
+    /// </summary>
+    public required double CpuPercent { get; init; }
+
+    /// <summary>OS working set in bytes — total physical RAM used by this process.</summary>
+    public required long WorkingSetBytes { get; init; }
+
+    /// <summary>Managed GC heap in bytes — excludes native/unmanaged allocations.</summary>
+    public required long GcHeapBytes { get; init; }
 }

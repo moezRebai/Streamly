@@ -41,16 +41,19 @@ public sealed class InstanceRegistry
     // ── Cluster-wide aggregates ────────────────────────────────────────────
 
     /// <summary>
-    /// Total active streams across publisher and both-role instances only.
-    /// Subscriber instances report the same streams as their publisher counterpart,
-    /// so including them would double-count.
+    /// Total unique active streams across the cluster.
+    /// Publisher and follower instances all carry the same synced stream set, so we
+    /// deduplicate by RequestId across all Publisher/Both instances instead of summing,
+    /// which would double-count identical streams held by leader and follower(s).
     /// </summary>
     public int TotalActiveStreams =>
         _states.Values
                .Where(s => s.IsReachable
                         && s.Metrics is not null
                         && s.Metrics.InstanceRole is "Publisher" or "Both")
-               .Sum(s => s.Metrics!.ActiveStreams);
+               .SelectMany(s => s.Streams.Where(r => r.State == "Streaming"))
+               .DistinctBy(r => r.RequestId)
+               .Count();
 
     /// <summary>
     /// Cluster-wide publish rate (sum of rolling 60s windows, publishers only).

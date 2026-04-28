@@ -22,7 +22,8 @@ namespace Streamly.Core.ChangeDetection;
 public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TResponse> where TResponse : class
 {
     private readonly PropertyEntry[]    _entries;
-    private readonly HashSet<string>    _alwaysPublishProperties;
+    private readonly PropertyEntry[]    _alwaysPublishEntries;
+    private readonly HashSet<string>    _alwaysPublishNames;
 
     public DefaultResponseDiffComputer()
     {
@@ -33,11 +34,12 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
 
         var properties = typeof(TResponse)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.CanRead && p.CanWrite)
+            .Where(p => p is { CanRead: true, CanWrite: true })
             .ToArray();
 
         var entries              = new List<PropertyEntry>();
-        _alwaysPublishProperties = [];
+        var alwaysPublishEntries = new List<PropertyEntry>();
+        _alwaysPublishNames      = [];
 
         foreach (var prop in properties)
         {
@@ -46,14 +48,16 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
 
             if (prop.GetCustomAttribute<AlwaysPublishAttribute>() != null)
             {
-                _alwaysPublishProperties.Add(prop.Name);
+                _alwaysPublishNames.Add(prop.Name);
+                alwaysPublishEntries.Add(new PropertyEntry(prop));
                 continue;
             }
 
             entries.Add(new PropertyEntry(prop));
         }
 
-        _entries = entries.ToArray();
+        _entries              = entries.ToArray();
+        _alwaysPublishEntries = alwaysPublishEntries.ToArray();
     }
 
     public ResponseDiff<TResponse> Compute(TResponse? currentImage, TResponse newResponse)
@@ -74,7 +78,7 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
             return new ResponseDiff<TResponse>(currentImage, null, null);
 
         // Include AlwaysPublish properties whenever anything changed
-        foreach (var name in _alwaysPublishProperties)
+        foreach (var name in _alwaysPublishNames)
             changed.Add(name);
 
         // Build partial Update — only changed properties are meaningful
@@ -86,12 +90,10 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
                 entry.SetValue(update, entry.GetValue(newResponse));
         }
 
-        // Copy AlwaysPublish properties (they sit outside _entries)
-        foreach (var name in _alwaysPublishProperties)
-        {
-            var entry = Array.Find(_entries, e => e.PropertyName == name);
-            entry?.SetValue(update, entry.GetValue(newResponse));
-        }
+        // Copy AlwaysPublish properties from newResponse into the delta.
+        // These have their own compiled entries — they are not in _entries.
+        foreach (var entry in _alwaysPublishEntries)
+            entry.SetValue(update, entry.GetValue(newResponse));
 
         return new ResponseDiff<TResponse>(newResponse, update, changed);
     }
@@ -104,7 +106,13 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
                 entry.SetValue(localImage, entry.GetValue(delta));
         }
 
-        // AlwaysPublish properties are included in changedProperties when relevant — handled above
+        // AlwaysPublish properties have their own entry list — apply them when present in the delta
+        foreach (var entry in _alwaysPublishEntries)
+        {
+            if (changedProperties.Contains(entry.PropertyName))
+                entry.SetValue(localImage, entry.GetValue(delta));
+        }
+
         return localImage;
     }
 
@@ -122,9 +130,14 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
             PropertyName = prop.Name;
             _getValue    = BuildGetter(prop);
             _setValue    = BuildSetter(prop);
-            _hasChanged  = IsSimpleType(prop.PropertyType)
-                ? BuildSimpleComparison(prop)
-                : BuildReferenceComparison(_getValue);
+
+            var threshold = prop.GetCustomAttribute<PublishThresholdAttribute>();
+
+            _hasChanged = threshold != null
+                ? BuildThresholdComparison(_getValue, threshold.Threshold)
+                : IsSimpleType(prop.PropertyType)
+                    ? BuildSimpleComparison(prop)
+                    : BuildReferenceComparison(_getValue);
         }
 
         public bool    HasChanged(TResponse a, TResponse b) => _hasChanged(a, b);
@@ -155,6 +168,20 @@ public class DefaultResponseDiffComputer<TResponse> : IResponseDiffComputer<TRes
         }
 
         // ── Comparison builders ───────────────────────────────────────────────
+
+        // Threshold comparison — uses the compiled getter so property access stays fast.
+        // Convert.ToDouble handles decimal, double, float, int, long, etc. at negligible cost.
+        private static Func<TResponse, TResponse, bool> BuildThresholdComparison(
+            Func<TResponse, object?> getter, double threshold)
+        {
+            return (a, b) =>
+            {
+                var va = getter(a);
+                var vb = getter(b);
+                if (va is null || vb is null) return !Equals(va, vb);
+                return Math.Abs(Convert.ToDouble(vb) - Convert.ToDouble(va)) >= threshold;
+            };
+        }
 
         private static Func<TResponse, TResponse, bool> BuildSimpleComparison(PropertyInfo prop)
         {

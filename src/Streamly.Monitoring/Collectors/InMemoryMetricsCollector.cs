@@ -15,7 +15,9 @@ namespace Streamly.Monitoring.Collectors;
 /// NullMetricsCollector default registered by AddStreamlyServer() /
 /// AddStreamlyClient().
 /// </summary>
-public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStreamlyMetricsCollector
+public sealed class InMemoryMetricsCollector(
+    MonitoringOptions options,
+    ProcessMetricsSampler processSampler) : IStreamlyMetricsCollector
 {
     // ── Process-level counters (Interlocked) ──────────────────────────────────
     private long _totalStreamsOpened;
@@ -28,6 +30,7 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
     private long _totalMessagesReceived;
     private long _totalWatchdogTriggers;
     private long _totalReconnectionAttempts;
+    private long _totalConfirmationFailures;
 
     // ── Leadership state (volatile — single writer from election events) ──────
     private volatile bool _isLeader;
@@ -116,25 +119,72 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
 
     // ── IStreamlyMetricsCollector — subscriber lifecycle ─────────────────────
 
+    public void RecordSubscriptionAttempted(string requestId, string streamName, string requestJson)
+    {
+        // Create a "Pending" entry the moment the subscriber attempts the stream.
+        // This makes the stream visible in monitoring even if no publisher ever responds.
+        // RecordSubscriptionOpened promotes it to "Streaming" on confirmation.
+        // RecordSubscriptionClosed marks it "NoProvider" when all retries are exhausted.
+        _streams.GetOrAdd(requestId, id => new StreamEntry
+        {
+            RequestId  = id,
+            StreamName = streamName,
+            State      = "Pending",
+            OpenedAt   = DateTimeOffset.UtcNow,
+            RequestJson = requestJson
+        });
+    }
+
+    public void RecordSubscriptionConfirmed(string trackingId, string requestId, string streamName)
+    {
+        Interlocked.Increment(ref _totalSubscriptionsOpened);
+
+        // Remove the ephemeral GUID-keyed pending entry, carrying its RequestJson forward
+        // so the stream detail page continues to show the original request payload.
+        _streams.TryRemove(trackingId, out var pending);
+
+        // Use indexer so a reconnect after a prior Closed entry gets a fresh Streaming state.
+        _streams[requestId] = new StreamEntry
+        {
+            RequestId   = requestId,
+            StreamName  = streamName,
+            State       = "Streaming",
+            OpenedAt    = DateTimeOffset.UtcNow,
+            RequestJson = pending?.RequestJson
+        };
+    }
+
     public void RecordSubscriptionOpened(string requestId, string streamName)
     {
         Interlocked.Increment(ref _totalSubscriptionsOpened);
 
-        // Subscriber instances track subscriptions, not publishing streams.
-        // Use GetOrAdd so a publisher-side entry is not overwritten if this
-        // instance handles both roles.
-        _streams.GetOrAdd(requestId, id => new StreamEntry
+        // Promote an existing "Pending" entry to "Streaming" on publisher confirmation,
+        // or create a fresh entry if RecordSubscriptionAttempted was not called
+        // (backward-compatible path for publisher-only instances).
+        var entry = _streams.GetOrAdd(requestId, id => new StreamEntry
         {
             RequestId  = id,
             StreamName = streamName,
             State      = "Streaming",
             OpenedAt   = DateTimeOffset.UtcNow
         });
+
+        entry.State = "Streaming";
     }
 
     public void RecordSubscriptionClosed(string requestId, CloseReason reason)
     {
-        Interlocked.Increment(ref _totalSubscriptionsClosed);
+        if (_streams.TryGetValue(requestId, out var entry))
+        {
+            // Only count as closed if it was confirmed — Pending entries that expire
+            // to NoProvider were never opened, so adjusting the counter would corrupt
+            // the ActiveSubscriptions calculation.
+            if (entry.State == "Streaming")
+                Interlocked.Increment(ref _totalSubscriptionsClosed);
+
+            entry.State    = reason == CloseReason.NoProvider ? "NoProvider" : "Closed";
+            entry.ClosedAt = DateTimeOffset.UtcNow;
+        }
     }
 
     public void RecordMessageReceived(string requestId)
@@ -150,6 +200,11 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
     public void RecordReconnectionAttempt(string requestId)
     {
         Interlocked.Increment(ref _totalReconnectionAttempts);
+    }
+
+    public void RecordConfirmationFailure(string streamName)
+    {
+        Interlocked.Increment(ref _totalConfirmationFailures);
     }
 
     // ── IStreamlyMetricsCollector — infrastructure ────────────────────────────
@@ -174,8 +229,10 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
     /// </summary>
     public InstanceMetricsSnapshot GetSnapshot()
     {
-        var activeStreams = _streams.Values
-            .Count(e => e.State == "Streaming");
+        var pendingSubscriptions   = _streams.Values.Count(e => e.State == "Pending");
+        var publisherActiveStreams  = (int)Math.Max(0, _totalStreamsOpened - _totalStreamsClosed);
+        var subscriberActiveStreams = (int)Math.Max(0, _totalSubscriptionsOpened - _totalSubscriptionsClosed) + pendingSubscriptions;
+        var activeStreams           = publisherActiveStreams + subscriberActiveStreams;
 
         var activeSubscriptions = (int)(_totalSubscriptionsOpened - _totalSubscriptionsClosed);
 
@@ -189,6 +246,9 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
             LeaderEpoch              = _leaderEpoch,
             NatsConnected            = _natsConnected,
             ActiveStreams             = activeStreams,
+            PendingSubscriptions     = pendingSubscriptions,
+            PublisherActiveStreams    = publisherActiveStreams,
+            SubscriberActiveStreams   = subscriberActiveStreams,
             TotalStreamsOpened        = Interlocked.Read(ref _totalStreamsOpened),
             TotalStreamsClosed       = Interlocked.Read(ref _totalStreamsClosed),
             TotalPublishes           = Interlocked.Read(ref _totalPublishes),
@@ -199,8 +259,12 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
             TotalSubscriptionsOpened = Interlocked.Read(ref _totalSubscriptionsOpened),
             TotalSubscriptionsClosed = Interlocked.Read(ref _totalSubscriptionsClosed),
             TotalMessagesReceived    = Interlocked.Read(ref _totalMessagesReceived),
-            TotalWatchdogTriggers    = Interlocked.Read(ref _totalWatchdogTriggers),
-            TotalReconnectionAttempts = Interlocked.Read(ref _totalReconnectionAttempts)
+            TotalWatchdogTriggers     = Interlocked.Read(ref _totalWatchdogTriggers),
+            TotalReconnectionAttempts = Interlocked.Read(ref _totalReconnectionAttempts),
+            TotalConfirmationFailures = Interlocked.Read(ref _totalConfirmationFailures),
+            CpuPercent                = processSampler.CpuPercent,
+            WorkingSetBytes           = processSampler.WorkingSetBytes,
+            GcHeapBytes               = processSampler.GcHeapBytes
         };
     }
 
@@ -217,8 +281,8 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
 
         foreach (var entry in _streams.Values)
         {
-            // Evict closed streams past the retention window
-            if (entry.State == "Closed" && entry.ClosedAt.HasValue && entry.ClosedAt < cutoff)
+            // Evict closed/no-provider streams past the retention window
+            if (entry.State is "Closed" or "NoProvider" && entry.ClosedAt.HasValue && entry.ClosedAt < cutoff)
                 continue;
 
             if (streamNameFilter != null &&
@@ -257,7 +321,7 @@ public sealed class InMemoryMetricsCollector(MonitoringOptions options) : IStrea
             return null;
 
         var cutoff = DateTimeOffset.UtcNow - _options.RetainClosedStreamsFor;
-        if (entry.State == "Closed" && entry.ClosedAt.HasValue && entry.ClosedAt < cutoff)
+        if (entry.State is "Closed" or "NoProvider" && entry.ClosedAt.HasValue && entry.ClosedAt < cutoff)
             return null;
 
         return new StreamDetailRecord

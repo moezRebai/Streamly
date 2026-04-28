@@ -17,6 +17,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
 {
     private readonly SubscriptionManager<TRequest, TResponse> _subscriptionManager;
     private readonly IMessageSerializer _serializer;
+    private readonly IStreamlyMetricsCollector _metrics;
     private readonly StreamlySettings _settings;
     private readonly ILogger<StreamingSubscriber<TRequest, TResponse>> _logger;
     private readonly IStreamingTransport _transport;
@@ -28,6 +29,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
         string streamName,
         SubscriptionManager<TRequest, TResponse> subscriptionManager,
         IMessageSerializer serializer,
+        IStreamlyMetricsCollector metrics,
         IStreamingTransport transport,
         ISubjectResolver subjects,
         IOptions<StreamlySettings> options,
@@ -38,6 +40,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
 
         _subscriptionManager = subscriptionManager ?? throw new ArgumentNullException(nameof(subscriptionManager));
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
         _settings = options.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
@@ -54,7 +57,15 @@ internal class StreamingSubscriber<TRequest, TResponse>
 
         return Observable.Create<TResponse>(async (observer, cancellationToken) =>
         {
-            var cycleAttempt = 0;
+            // Assign a GUID tracking key before any confirmation so the subscription
+            // is visible in monitoring immediately. Replaced by the real requestId
+            // on confirmation via RecordSubscriptionConfirmed.
+            var trackingId  = Guid.NewGuid().ToString("N");
+            var requestJson = _serializer.SerializeToJson(request);
+            _metrics.RecordSubscriptionAttempted(trackingId, _streamName, requestJson);
+
+            var cycleAttempt  = 0;
+            var everConfirmed = false;
 
             while (!cancellationToken.IsCancellationRequested)
             {
@@ -78,8 +89,14 @@ internal class StreamingSubscriber<TRequest, TResponse>
                         "Stream permanently lost for '{StreamName}' after {Max} attempts",
                         _streamName, _settings.Subscriber.MaxReconnectAttempts);
 
-                    onStatusChanged?.Invoke(
-                        StreamStatus.Failed(_streamName, _settings.Subscriber.MaxReconnectAttempts, ex));
+                    // Mark NoProvider only if the stream was never confirmed — meaning no cluster
+                    // handled this request. If it was once active, Failed is the right status.
+                    if (!everConfirmed)
+                        _metrics.RecordSubscriptionClosed(trackingId, CloseReason.NoProvider);
+
+                    onStatusChanged?.Invoke(everConfirmed
+                        ? StreamStatus.Failed(_streamName, _settings.Subscriber.MaxReconnectAttempts, ex)
+                        : StreamStatus.NoProvider(_streamName));
 
                     observer.OnError(ex);
                     break;
@@ -90,10 +107,12 @@ internal class StreamingSubscriber<TRequest, TResponse>
                     await DoSubscribeAsync(
                         request, behavior, observer, onStatusChanged,
                         isReconnect: cycleAttempt > 1,
+                        trackingId,
                         cancellationToken);
 
                     // DoSubscribeAsync returned cleanly = stream ended normally
                     // (publisher sent OnCompleted / unsubscribe)
+                    everConfirmed = true;
                     _logger.LogInformation("Stream ended normally for '{StreamName}'", _streamName);
                     break;
                 }
@@ -107,6 +126,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
                 {
                     // Was confirmed and connected, then publisher died
                     // → reset counter because we proved the system works
+                    everConfirmed = true;
                     _logger.LogWarning("Publisher lost on '{StreamName}' after successful connection, " +
                         "resetting retry counter",
                         _streamName);
@@ -145,6 +165,7 @@ internal class StreamingSubscriber<TRequest, TResponse>
         IObserver<TResponse> observer,
         Action<StreamStatus>? onStatusChanged,
         bool isReconnect,
+        string trackingId,
         CancellationToken cancellationToken)
     {
         var correlationId = Guid.NewGuid().ToString("N");
@@ -158,7 +179,8 @@ internal class StreamingSubscriber<TRequest, TResponse>
             CorrelationId  = correlationId,
             Behavior       = behavior,
             StatusCallback = onStatusChanged,
-            Request        = request
+            Request        = request,
+            TrackingId     = trackingId
         };
 
         using var subscription = state.Subject.Subscribe(

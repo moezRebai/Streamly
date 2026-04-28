@@ -27,4 +27,8 @@
         <ProjectReference Include="..\..\src\Streamly\Streamly.csproj" />
         <ProjectReference Include="..\..\src\Streamly.Monitoring\Streamly.Monitoring.csproj" />
     </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="logs\" />
+    </ItemGroup>
 </Project>

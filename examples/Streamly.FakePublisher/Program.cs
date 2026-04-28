@@ -4,8 +4,11 @@ using Microsoft.AspNetCore.Hosting;
 using Serilog;
 using Streamly;
 using Streamly.Audit;
+using Streamly.Core.Abstractions;
 using Streamly.FakePublisher;
 using Streamly.FakePublisher.Models;
+using Streamly.Infrastructure.Interfaces;
+using Streamly.Infrastructure.Serialization;
 using Streamly.Monitoring;
 
 Log.Logger = new LoggerConfiguration()
@@ -35,11 +38,18 @@ try
         {
             services.AddRouting();
 
+            services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
+
             services.AddStreamly(context.Configuration, options =>
             {
                 options.AddHandler<SpotRequest, SpotPrice, SpotPricingHandler>("GetSpotPrice");
                 options.AddHandler<IrsRequest, IrsResponse, SwapPricingHandler>("GetIrsPrice");
             });
+
+            services.Configure<SpotPricingFilterOptions>(
+                context.Configuration.GetSection(SpotPricingFilterOptions.SectionName));
+            
+            services.AddSingleton<IClusterAffinityFilter<SpotRequest>, SpotPricingClusterFilter>();
 
             services.AddStreamlyMonitoring(options =>
             {

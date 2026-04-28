@@ -64,9 +64,10 @@
             <MudTh>Instance</MudTh>
             <MudTh Style="width:110px;">Role</MudTh>
             <MudTh Style="width:80px; text-align:right;">Pub/s</MudTh>
-            <MudTh Style="width:100px; text-align:right;">Active Streams</MudTh>
-            <MudTh Style="width:100px; text-align:right;">Subscriptions</MudTh>
+            <MudTh Style="width:120px; text-align:right;">Streams (Sub/Pub)</MudTh>
             <MudTh Style="width:70px; text-align:right;">Epoch</MudTh>
+            <MudTh Style="width:80px; text-align:right;">CPU</MudTh>
+            <MudTh Style="width:90px; text-align:right;">Memory</MudTh>
             <MudTh Style="width:130px; text-align:right;">Last Update</MudTh>
         </HeaderContent>
 
@@ -110,18 +111,20 @@
                 </MudText>
             </MudTd>
 
-            @* Active streams *@
+            @* Streams Sub/Pub *@
             <MudTd Style="text-align:right;">
-                <MudText Typo="Typo.caption">
-                    @(context.Metrics?.ActiveStreams.ToString() ?? "—")
-                </MudText>
-            </MudTd>
-
-            @* Subscriptions *@
-            <MudTd Style="text-align:right;">
-                <MudText Typo="Typo.caption">
-                    @(context.Metrics?.ActiveSubscriptions.ToString() ?? "—")
-                </MudText>
+                <MudTooltip Text="Subscriber streams / Publisher streams">
+                    <MudText Typo="Typo.caption">
+                        @if (context.Metrics is null)
+                        {
+                            <span>—</span>
+                        }
+                        else
+                        {
+                            <span>@context.Metrics.SubscriberActiveStreams / @context.Metrics.PublisherActiveStreams</span>
+                        }
+                    </MudText>
+                </MudTooltip>
             </MudTd>
 
             @* Epoch *@
@@ -129,6 +132,23 @@
                 <MudText Typo="Typo.caption" Style="opacity:.5;">
                     @(context.Metrics?.LeaderEpoch.ToString() ?? "—")
                 </MudText>
+            </MudTd>
+
+            @* CPU % *@
+            <MudTd Style="text-align:right;">
+                <MudText Typo="Typo.caption"
+                         Style="@(context.Metrics?.CpuPercent > 80 ? "color:#ef9a9a;" : "")">
+                    @(context.Metrics is null ? "—" : $"{context.Metrics.CpuPercent:F1}%")
+                </MudText>
+            </MudTd>
+
+            @* Memory (working set) *@
+            <MudTd Style="text-align:right;">
+                <MudTooltip Text="@(context.Metrics is null ? "" : $"GC heap: {FormatBytes(context.Metrics.GcHeapBytes)}")">
+                    <MudText Typo="Typo.caption">
+                        @(context.Metrics is null ? "—" : FormatBytes(context.Metrics.WorkingSetBytes))
+                    </MudText>
+                </MudTooltip>
             </MudTd>
 
             @* Last polled *@
@@ -201,4 +221,12 @@
 
     static string FormatPolled(DateTimeOffset dt) =>
         dt.ToLocalTime().ToString("HH:mm:ss.fff");
+
+    static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1024 * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):F1} GB",
+        >= 1024 * 1024        => $"{bytes / (1024.0 * 1024):F0} MB",
+        >= 1024               => $"{bytes / 1024.0:F0} KB",
+        _                     => $"{bytes} B"
+    };
 }

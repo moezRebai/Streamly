@@ -35,4 +35,14 @@ public class StreamStatus
         MaxRetryAttempts = maxAttempts,
         Exception = ex
     };
+
+    /// <summary>
+    /// No cluster accepted the request — responsible cluster is down or no filter matched.
+    /// </summary>
+    public static StreamStatus NoProvider(string streamName) => new()
+    {
+        State = StreamState.Failed,
+        StreamName = streamName,
+        Message = "No provider available for this stream — the responsible cluster may be offline"
+    };
 }

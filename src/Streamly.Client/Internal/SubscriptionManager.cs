@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Streamly.Core.Abstractions;
@@ -336,8 +335,8 @@ internal class SubscriptionManager<TRequest, TResponse>(
             // Start watchdog only after confirmation — the stream is now active.
             StartWatchdog();
 
-            // Subscription is now active — record after watchdog started
-            _metrics.RecordSubscriptionOpened(confirmation.RequestId, streamName);
+            // Subscription is now active — swap GUID tracking entry to real requestId entry
+            _metrics.RecordSubscriptionConfirmed(state.TrackingId ?? string.Empty, confirmation.RequestId, streamName);
 
             _logger.LogDebug(
                 "Confirmation mapped: correlationId '{CorrelationId}' → requestId '{RequestId}'",
@@ -491,7 +490,7 @@ internal class SubscriptionManager<TRequest, TResponse>(
                 _metrics.RecordLatestImage(
                     state.RequestId!,
                     streamName,
-                    JsonSerializer.Serialize(merged));
+                    _serializer.SerializeToJson(merged));
                 
                 if (message.IsFinal)
                     await HandleFinalMessageAsync(state, message.CloseReason ?? CloseReason.Normal);
@@ -501,6 +500,7 @@ internal class SubscriptionManager<TRequest, TResponse>(
         {
             _logger.LogError(ex,
                 "Error processing response for RequestId '{RequestId}'", response.RequestId);
+            throw;
         }
     }
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Streamly.Core.Abstractions;
 using Streamly.Monitoring.Collectors;
 using Streamly.Monitoring.Endpoints;
@@ -36,9 +37,16 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton(options);
 
+        // ProcessMetricsSampler is registered as both a singleton (so InMemoryMetricsCollector
+        // can read its latest readings) and a hosted service (so it runs its background loop).
+        services.AddSingleton<ProcessMetricsSampler>();
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ProcessMetricsSampler>());
+
         services.RemoveAll<IStreamlyMetricsCollector>();
         services.AddSingleton<InMemoryMetricsCollector>(sp =>
-            new InMemoryMetricsCollector(sp.GetRequiredService<MonitoringOptions>()));
+            new InMemoryMetricsCollector(
+                sp.GetRequiredService<MonitoringOptions>(),
+                sp.GetRequiredService<ProcessMetricsSampler>()));
         services.AddSingleton<IStreamlyMetricsCollector>(sp =>
             sp.GetRequiredService<InMemoryMetricsCollector>());
 

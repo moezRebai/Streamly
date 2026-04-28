@@ -13,9 +13,11 @@ A distributed, real-time streaming library for .NET 9 built on [NATS JetStream](
 - [Solution Structure](#solution-structure)
 - [Getting Started](#getting-started)
 - [Publisher Side](#publisher-side)
+- [Cluster Affinity Filtering](#cluster-affinity-filtering)
 - [Subscriber Side](#subscriber-side)
 - [Leader Election & Failover](#leader-election--failover)
 - [Change Detection & Delta Compression](#change-detection--delta-compression)
+- [Serialization](#serialization)
 - [Monitoring](#monitoring)
 - [Audit Trail](#audit-trail)
 - [Dashboard](#dashboard)
@@ -238,6 +240,83 @@ builder.Services.AddStreamlyServer(builder.Configuration, options =>
 
 ---
 
+## Cluster Affinity Filtering
+
+`IClusterAffinityFilter<TRequest>` lets each publisher cluster decide which requests it will accept. When registered, the framework calls `Accepts(request)` before opening a stream; if it returns `false`, the cluster silently ignores the request and lets another cluster handle it.
+
+**Without a filter** every request is accepted by every cluster — the default for single-cluster deployments.
+
+### Use Case: Horizontal Partitioning
+
+In a multi-cluster setup you can split the request space so each cluster only owns a subset of instruments:
+
+```
+Cluster A (EUR pairs)        Cluster B (USD pairs)
+  EUR/USD ✓                    USD/JPY ✓
+  EUR/GBP ✓                    USD/CHF ✓
+  EUR/JPY ✗ → ignored          EUR/USD ✗ → ignored
+```
+
+### Implementation
+
+```csharp
+public class SpotPricingClusterFilter(IOptions<SpotPricingFilterOptions> options)
+    : IClusterAffinityFilter<SpotRequest>
+{
+    private readonly HashSet<string> _allowed = new(
+        options.Value.AllowedCurrencyPairs,
+        StringComparer.OrdinalIgnoreCase);
+
+    // Empty list = no filter — accept all (single-cluster default)
+    public bool Accepts(SpotRequest request)
+        => _allowed.Count == 0 || _allowed.Contains(request.CurrencyPair);
+}
+```
+
+### Registration
+
+Register before `AddStreamlyServer` / `AddStreamly`:
+
+```csharp
+services.AddSingleton<IClusterAffinityFilter<SpotRequest>, SpotPricingClusterFilter>();
+
+services.AddStreamly(configuration, options =>
+{
+    options.AddHandler<SpotRequest, SpotPrice, SpotPricingHandler>("GetSpotPrice");
+});
+```
+
+### Config-Driven Partitioning
+
+Drive the filter from `appsettings.json` so clusters can be reconfigured without redeployment:
+
+```json
+// Cluster A appsettings.json
+{
+  "SpotPricingFilter": {
+    "AllowedCurrencyPairs": [ "EUR/USD", "EUR/GBP", "EUR/JPY" ]
+  }
+}
+
+// Cluster B appsettings.json
+{
+  "SpotPricingFilter": {
+    "AllowedCurrencyPairs": [ "USD/JPY", "USD/CHF", "GBP/USD" ]
+  }
+}
+```
+
+```csharp
+services.Configure<SpotPricingFilterOptions>(
+    configuration.GetSection(SpotPricingFilterOptions.SectionName));
+```
+
+### What Happens When No Cluster Accepts
+
+If every cluster's filter rejects a request, no confirmation is sent to the subscriber. After `ConfirmationTimeoutMs` the subscriber's `onStatusChanged` fires with `StreamStatus.NoProvider` and the stream is reported as `NoProvider` in the monitoring dashboard.
+
+---
+
 ## Subscriber Side
 
 ### Subscribing to a Stream
@@ -318,36 +397,198 @@ Streamly uses NATS JetStream Key-Value store for distributed leader election:
 
 ## Change Detection & Delta Compression
 
-By default, Streamly uses `DefaultResponseDiffComputer<T>` which serializes responses to JSON and sends the full payload.
+Streamly's built-in `DefaultResponseDiffComputer<T>` inspects your response type at startup, compiles property accessor delegates, and performs efficient field-by-field comparison on every publish. Only the properties that actually changed are sent over the wire; subscribers merge deltas into their local image.
 
-To reduce bandwidth, implement `IResponseDiffComputer<TResponse>`:
+### How It Works
+
+| Message | `ChangedProperties` | `Data` |
+|---------|---------------------|--------|
+| First publish | `null` (full snapshot) | Complete object |
+| Subsequent publishes | `["Bid", "Ask"]` | Partial object — only changed fields set |
+| Nothing changed | — (message skipped) | — |
+
+### Change Detection Attributes
+
+Decorate response properties to tune exactly how change detection behaves:
+
+#### `[AlwaysPublish]`
+
+Include this property in every delta even when its value has not changed. Useful for identity fields the subscriber needs on every message to make sense of the data (e.g. `CurrencyPair`, `Tenor`).
+
+```csharp
+public class SpotPrice
+{
+    [AlwaysPublish]
+    public string CurrencyPair { get; set; }  // echoed on every delta
+
+    public decimal Bid { get; set; }
+    public decimal Ask { get; set; }
+}
+```
+
+> Only triggered when at least one other property changed — `[AlwaysPublish]` alone does not force a publish when nothing else changed.
+
+#### `[PublishThreshold(double)]`
+
+Treat a numeric property as changed only when the absolute difference between old and new value meets or exceeds the given threshold. Applies to any property type convertible to `double` (`decimal`, `double`, `float`, `int`, `long`, …).
+
+```csharp
+public class SpotPrice
+{
+    [PublishThreshold(0.00001)]   // suppress sub-pip noise on a 5dp feed
+    public decimal Bid { get; set; }
+
+    [PublishThreshold(0.00001)]
+    public decimal Ask { get; set; }
+}
+```
+
+A threshold of `0` (or no attribute) behaves identically to plain equality comparison.
+
+#### `[IgnoreInComparison]`
+
+Exclude a property from change detection entirely. It is never compared and never included in deltas.
+
+```csharp
+public class SpotPrice
+{
+    [IgnoreInComparison]
+    public DateTime ServerTimestamp { get; set; }  // metadata, not a price change signal
+}
+```
+
+### Complete Example
+
+```csharp
+using Streamly.Core.ChangeDetection;
+
+public class SpotPrice
+{
+    [AlwaysPublish]
+    public string CurrencyPair { get; set; }   // always echoed
+
+    [PublishThreshold(0.00001)]
+    public decimal Bid { get; set; }            // must move ≥ 1 pip
+
+    [PublishThreshold(0.00001)]
+    public decimal Ask { get; set; }
+
+    [IgnoreInComparison]
+    public DateTime Timestamp { get; set; }    // never triggers a publish
+}
+```
+
+No registration is needed — `DefaultResponseDiffComputer<T>` reads the attributes automatically.
+
+### Custom Diff Computer
+
+For advanced scenarios (e.g. nested objects, collection diffing), implement `IResponseDiffComputer<TResponse>` directly:
 
 ```csharp
 public class SpotPriceDiffComputer : IResponseDiffComputer<SpotPrice>
 {
-    public ResponseDiff Compute(SpotPrice? previous, SpotPrice current)
+    public ResponseDiff<SpotPrice> Compute(SpotPrice? previous, SpotPrice current)
     {
-        if (previous == null)
-            return ResponseDiff.Full(Serialize(current));
+        // return ResponseDiff<SpotPrice>.NoChange() to skip publish
+        // return ResponseDiff<SpotPrice>.Full(current) for first message
+        // return ResponseDiff<SpotPrice>.Delta(partial, changed, latest) for delta
+    }
 
-        var delta = new SpotPriceDelta();
-        if (previous.Bid != current.Bid) delta.Bid = current.Bid;
-        if (previous.Ask != current.Ask) delta.Ask = current.Ask;
-
-        return delta.HasChanges
-            ? ResponseDiff.Delta(Serialize(delta))
-            : ResponseDiff.NoChange();
+    public SpotPrice Merge(SpotPrice image, SpotPrice delta, IReadOnlyCollection<string> changed)
+    {
+        // apply delta fields onto image and return the merged result
     }
 }
 ```
 
-Register it alongside your handler:
+Register it alongside the handler:
 
 ```csharp
 options.AddHandler<SpotRequest, SpotPrice, SpotPricingHandler, SpotPriceDiffComputer>("GetSpotPrice");
 ```
 
-Subscribers automatically merge deltas into their local image.
+---
+
+## Serialization
+
+Streamly separates the **transport format** (bytes on the wire between publisher and subscriber) from the **display format** (JSON shown in the monitoring dashboard). The display path always uses JSON regardless of the transport.
+
+### Default: System.Text.Json
+
+No configuration required. `DefaultMessageSerializer` uses compact camelCase JSON with null suppression on the wire:
+
+```
+services.AddStreamly(...)  // DefaultMessageSerializer registered automatically
+```
+
+Suitable for most workloads. Human-readable and debuggable.
+
+### MessagePack (High-Performance)
+
+MessagePack is a compact binary format that is typically **3–5× faster** and produces **40–60% smaller** payloads compared to JSON — well-suited for high-frequency financial feeds.
+
+Install the package:
+
+```bash
+dotnet add package MessagePack
+```
+
+Register before `AddStreamlyServer` / `AddStreamlyClient` / `AddStreamly`:
+
+```csharp
+using Streamly.Infrastructure.Interfaces;
+using Streamly.Infrastructure.Serialization;
+
+// Publisher
+services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
+services.AddStreamly(configuration, options => { ... });
+
+// Subscriber — must use the same serializer as the publisher
+services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
+services.AddStreamly(configuration, options => { ... });
+```
+
+> **Both sides must use the same serializer.** If the publisher sends MessagePack bytes and the subscriber expects JSON (or vice versa), deserialization will fail.
+
+`MessagePackMessageSerializer` uses `ContractlessStandardResolverAllowPrivate` — no `[MessagePackObject]` attributes are required on your request or response models. Built-in formatters for `decimal` and `DateOnly` are included.
+
+| | `DefaultMessageSerializer` | `MessagePackMessageSerializer` |
+|---|---|---|
+| Format | JSON (text) | MessagePack (binary) |
+| Payload size | baseline | ~40–60% smaller |
+| Throughput | baseline | ~3–5× faster |
+| Model changes | none | none (contractless) |
+| Debuggability | human-readable | binary (`MessagePackSerializer.ConvertToJson` to inspect) |
+
+### Custom Serializer
+
+To plug in any other format (MemoryPack, Protobuf, etc.), extend `MessageSerializerBase`:
+
+```csharp
+public class MySerializer : MessageSerializerBase
+{
+    // Transport — implement these three
+    public override byte[] Serialize<T>(T obj)
+        => /* your format */;
+
+    public override T Deserialize<T>(byte[] data)
+        => /* your format */;
+
+    public override T Deserialize<T>(ReadOnlySpan<byte> data)
+        => /* your format */;
+
+    // SerializeToJson is sealed — dashboard display is always JSON
+}
+```
+
+Register it before the Streamly services:
+
+```csharp
+services.AddSingleton<IMessageSerializer, MySerializer>();
+services.AddStreamly(configuration, options => { ... });
+```
+
+`TryAddSingleton` is used internally, so any registration placed before `AddStreamly` takes priority over the default.
 
 ---
 

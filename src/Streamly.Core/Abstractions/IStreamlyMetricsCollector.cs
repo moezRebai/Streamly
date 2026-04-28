@@ -97,7 +97,25 @@ public interface IStreamlyMetricsCollector
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Called when a new subscription is opened on this instance.
+    /// Called the moment a subscriber attempts a stream, before any confirmation.
+    /// Creates a "Pending" monitoring entry so the stream is visible even if no
+    /// cluster ever responds. Promoted to "Streaming" by RecordSubscriptionOpened
+    /// when the publisher confirms, or to "NoProvider" when all retries are exhausted.
+    /// </summary>
+    void RecordSubscriptionAttempted(string requestId, string streamName, string requestJson);
+
+    /// <summary>
+    /// Called when a subscription is confirmed by the publisher.
+    /// Promotes the "Pending" entry (keyed by trackingId) to a "Streaming" entry keyed by requestId.
+    /// </summary>
+    /// <param name="trackingId">The ephemeral GUID assigned by RecordSubscriptionAttempted.</param>
+    /// <param name="requestId">The real request identifier returned by the publisher.</param>
+    /// <param name="streamName">The registered stream name.</param>
+    void RecordSubscriptionConfirmed(string trackingId, string requestId, string streamName);
+
+    /// <summary>
+    /// Called when a new subscription is confirmed by the publisher.
+    /// Promotes the "Pending" entry created by RecordSubscriptionAttempted to "Streaming".
     /// </summary>
     /// <param name="requestId">The unique request identifier.</param>
     /// <param name="streamName">The registered stream name.</param>
@@ -148,6 +166,18 @@ public interface IStreamlyMetricsCollector
     void RecordReconnectionAttempt(string requestId);
 
     // -------------------------------------------------------------------------
+    // Publisher — confirmation
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Called when all retry attempts to send a confirmation message to a subscriber
+    /// have been exhausted. The subscriber will time out and reconnect on its own,
+    /// but this counter makes the failure visible in the monitoring dashboard.
+    /// </summary>
+    /// <param name="streamName">The stream on which the confirmation failed.</param>
+    void RecordConfirmationFailure(string streamName);
+
+    // -------------------------------------------------------------------------
     // Infrastructure — leader election and transport
     // -------------------------------------------------------------------------
 
@@ -196,6 +226,8 @@ public sealed class NullMetricsCollector : IStreamlyMetricsCollector
     public void RecordPublishSkipped(string requestId) { }
     public void RecordPublishError(string requestId, string errorMessage) { }
     public void RecordLatestImage(string requestId, string streamName, string rawJson) { }
+    public void RecordSubscriptionAttempted(string requestId, string streamName, string requestJson) { }
+    public void RecordSubscriptionConfirmed(string trackingId, string requestId, string streamName) { }
     public void RecordSubscriptionOpened(string requestId, string streamName) { }
     public void RecordSubscriptionClosed(string requestId, CloseReason reason) { }
     public void RecordMessageReceived(string requestId) { }
@@ -208,4 +240,5 @@ public sealed class NullMetricsCollector : IStreamlyMetricsCollector
     public void RecordRequestJson(string requestId, string requestJson) { }
     public void RecordMessageLatency(string requestId, double latencyMs) { }
     public void RecordFirstResponseLatency(string requestId, double elapsedMs) { }
+    public void RecordConfirmationFailure(string streamName) { }
 }

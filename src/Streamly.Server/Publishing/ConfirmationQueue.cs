@@ -1,17 +1,22 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Streamly.Core.Abstractions;
 using Streamly.Server.Leadership;
 
 namespace Streamly.Server.Publishing;
 
 internal sealed class ConfirmationQueue(
+    string streamName,
     ConfirmationPublisher publisher,
     ILeaderElectionService leaderElection,
+    IStreamlyMetricsCollector metrics,
     ILogger<ConfirmationQueue> logger)
     : IAsyncDisposable
 {
+    private readonly string _streamName = streamName ?? throw new ArgumentNullException(nameof(streamName));
     private readonly ConfirmationPublisher _publisher = publisher ?? throw new ArgumentNullException(nameof(publisher));
     private readonly ILeaderElectionService _leaderElection = leaderElection ?? throw new ArgumentNullException(nameof(leaderElection));
+    private readonly IStreamlyMetricsCollector _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
     private readonly ILogger<ConfirmationQueue> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     private readonly Channel<(string CorrelationId, string RequestId)> _channel =
@@ -75,14 +80,35 @@ internal sealed class ConfirmationQueue(
                     continue;
                 }
 
-                try
+                const int maxAttempts = 3;
+                Exception? lastEx = null;
+
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    await _publisher.ConfirmAsync(correlationId, requestId, cancellationToken);
+                    try
+                    {
+                        await _publisher.ConfirmAsync(correlationId, requestId, cancellationToken);
+                        lastEx = null;
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastEx = ex;
+                        _logger.LogWarning(ex,
+                            "Confirmation attempt {Attempt}/{Max} failed for correlationId '{CorrelationId}' on stream '{StreamName}'",
+                            attempt, maxAttempts, correlationId, _streamName);
+
+                        if (attempt < maxAttempts)
+                            await Task.Delay(200, cancellationToken);
+                    }
                 }
-                catch (Exception ex)
+
+                if (lastEx is not null)
                 {
-                    _logger.LogError(ex,
-                        "Failed to confirm correlationId '{CorrelationId}'", correlationId);
+                    _metrics.RecordConfirmationFailure(_streamName);
+                    _logger.LogError(lastEx,
+                        "All {Max} confirmation attempts exhausted for correlationId '{CorrelationId}' on stream '{StreamName}' — subscriber will reconnect after timeout",
+                        maxAttempts, correlationId, _streamName);
                 }
             }
         }
