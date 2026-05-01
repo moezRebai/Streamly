@@ -22,9 +22,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.FakeSubscriber", "
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", "{B1FCA7D3-6EFF-40ED-B2D2-62AEB747701E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Benchmarks", "benchmarks\Streamly.Benchmarks\Streamly.Benchmarks.csproj", "{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Benchmarks", "Benchmarks\Streamly.Benchmarks\Streamly.Benchmarks.csproj", "{3C023FE1-E7AA-4AF8-8F2A-79D46F409BD3}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.LoadTests", "benchmarks\Streamly.LoadTests\Streamly.LoadTests.csproj", "{F81E4442-5650-4921-B7DD-C9D62DCED0AB}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.LoadTests", "Benchmarks\Streamly.LoadTests\Streamly.LoadTests.csproj", "{F81E4442-5650-4921-B7DD-C9D62DCED0AB}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Streamly.Monitoring", "src\Streamly.Monitoring\Streamly.Monitoring.csproj", "{9F8EB25D-B0DE-426C-A054-702D090080EF}"
 EndProject
