@@ -37,21 +37,29 @@ public class MemoryBenchmark
         var managedBefore    = GC.GetTotalMemory(false);
         var workingSetBefore = Environment.WorkingSet;
 
+        var established = 0L;
         for (var i = 0; i < StreamCount; i++)
         {
+            var firstMsg = 1;
             var sub = _harness.Subscriber
                 .Subscribe(
-                    new BenchSpotRequest { CurrencyPair = "EUR/USD" },
+                    new SpotRequest { CurrencyPair = "EUR/USD" },
                     behavior: StreamBehavior.Live)
                 .Subscribe(
-                    onNext: _ => { },
+                    onNext: _ =>
+                    {
+                        if (Interlocked.Exchange(ref firstMsg, 0) == 1)
+                            Interlocked.Increment(ref established);
+                    },
                     onError: _ => { });
 
             _subscriptions.Add(sub);
         }
 
-        // Wait for all streams to receive their first message (fully established)
-        await Task.Delay(TimeSpan.FromSeconds(5));
+        // Wait for all streams to receive their first message (fully established), up to 30s
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (Interlocked.Read(ref established) < StreamCount && DateTime.UtcNow < deadline)
+            await Task.Delay(500);
 
         ForceFullGc();
         var managedAfter    = GC.GetTotalMemory(false);

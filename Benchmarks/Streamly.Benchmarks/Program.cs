@@ -19,7 +19,7 @@ Console.WriteLine("Requires: NATS server running on nats://localhost:4222");
 Console.WriteLine("Requires: Streamly.Test.Publisher running (SpotPricer + IrsPricer)");
 Console.WriteLine();
 Console.WriteLine("  1 - Latency        (Spot, P50/P95/P99, background load: 0/100/1k/5k)");
-Console.WriteLine("  2 - BurstOpen      (Spot, time-to-last-first-price: 1k/2k/5k/10k/15k)");
+Console.WriteLine("  2 - BurstOpen      (Spot, time-to-last-first-price: 1k/5k)");
 Console.WriteLine("  3 - IrsBurstOpen   (IRS,  time-to-last-first-price: 1k/5k/10k)");
 Console.WriteLine("  4 - Throughput     (Spot, msg/sec, 100/1k/5k/10k/20k streams)");
 Console.WriteLine("  5 - Memory         (Spot, KB/stream, 100/1k/5k/10k/20k streams)");

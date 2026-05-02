@@ -41,14 +41,14 @@ public class BurstOpenBenchmark
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
-        DrainAndDispose(ref _subscriptions);
+        BenchmarkHelpers.DrainAndDispose(ref _subscriptions);
         await _harness.DisposeAsync();
     }
 
     [IterationCleanup]
     public void IterationCleanup()
     {
-        DrainAndDispose(ref _subscriptions);
+        BenchmarkHelpers.DrainAndDispose(ref _subscriptions);
         // Let the publisher clear its registry before the next iteration
         // floods it with N fresh requests.
         Thread.Sleep(5000);
@@ -77,7 +77,7 @@ public class BurstOpenBenchmark
             {
                 var sub = _harness.Subscriber
                     .Subscribe(
-                        new BenchSpotRequest { CurrencyPair = pair },
+                        new SpotRequest { CurrencyPair = pair },
                         behavior: StreamBehavior.Live)
                     .Subscribe(
                         onNext: _ =>
@@ -102,22 +102,13 @@ public class BurstOpenBenchmark
 
         await Task.WhenAll(tasks);
 
-        // Safety net: 2 minutes is far beyond any realistic burst window.
+        // Safety net: 5 minutes is far beyond any realistic burst window.
         // Hitting it means the run is invalid (publisher overloaded / crashed).
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         cts.Token.Register(() =>
             tcs.TrySetException(new TimeoutException(
-                $"Only {N - remaining}/{N} streams received first price within 2 min.")));
+                $"Only {N - remaining}/{N} streams received first price within 5 min.")));
 
         return await tcs.Task;
-    }
-
-    // Same drain pattern as LatencyBenchmark: replace the bag atomically so a
-    // concurrent IterationSetup on a new param value cannot race with cleanup.
-    private static void DrainAndDispose(ref ConcurrentBag<IDisposable> bag)
-    {
-        var snapshot = Interlocked.Exchange(ref bag, new ConcurrentBag<IDisposable>());
-        while (snapshot.TryTake(out var sub))
-            sub.Dispose();
     }
 }

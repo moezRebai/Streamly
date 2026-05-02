@@ -6,7 +6,6 @@
 //   2. Streamly.Test.Publisher  (SpotPricer + IrsPricer handlers registered)
 //   3. dotnet run -c Release    (this benchmark)
 
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,38 +22,32 @@ public sealed class BenchmarkHarness : IAsyncDisposable
 
     private IHost? _subscriberHost;
 
-    public IStreamingSubscriber<BenchSpotRequest, BenchSpotPrice> Subscriber { get; private set; } = null!;
+    public IStreamingSubscriber<SpotRequest, SpotPrice> Subscriber { get; private set; } = null!;
     public IStreamingSubscriber<IrsRequest, IrsResponse> IrsSubscriber { get; private set; } = null!;
 
     public async Task StartAsync()
     {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Streamly:NatsUrl"] = NatsUrl,
-                ["Streamly:ServiceName"] = $"Bench-{Guid.NewGuid():N}"[..20],
-                ["Streamly:SubscriberHeartbeatTimeoutMs"] = "2000",
-            })
-            .Build();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Streamly:NatsUrl"] = NatsUrl,
+            ["Streamly:ServiceName"] = $"Bench-{Guid.NewGuid():N}"[..20],
+            ["Streamly:SubscriberHeartbeatTimeoutMs"] = "2000",
+        });
+        builder.Logging
+            .ClearProviders()
+            .AddFilter("Streamly", LogLevel.Warning);
+        builder.Services.AddStreamly(builder.Configuration, options =>
+        {
+            options.AddSubscriber<SpotRequest, SpotPrice>(SpotStreamName);
+            options.AddSubscriber<IrsRequest, IrsResponse>(IrsStreamName);
+        });
 
-        _subscriberHost = Host.CreateDefaultBuilder()
-            .ConfigureLogging(log => log
-                .ClearProviders()
-                .AddFilter("Streamly", LogLevel.Warning))
-            .ConfigureServices((_, services) =>
-            {
-                services.AddStreamly(config, options =>
-                {
-                    options.AddSubscriber<BenchSpotRequest, BenchSpotPrice>(SpotStreamName);
-                    options.AddSubscriber<IrsRequest, IrsResponse>(IrsStreamName);
-                });
-            })
-            .Build();
-
+        _subscriberHost = builder.Build();
         await _subscriberHost.StartAsync();
 
         Subscriber = _subscriberHost.Services
-            .GetRequiredService<IStreamingSubscriber<BenchSpotRequest, BenchSpotPrice>>();
+            .GetRequiredService<IStreamingSubscriber<SpotRequest, SpotPrice>>();
 
         IrsSubscriber = _subscriberHost.Services
             .GetRequiredService<IStreamingSubscriber<IrsRequest, IrsResponse>>();

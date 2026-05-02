@@ -4,9 +4,8 @@
 // The publisher (Streamly.Test.Publisher) ticks at 500ms per stream by default.
 // Expected baseline: N streams × 2 msg/sec.
 //
-// The benchmark opens all subscriptions, waits for the warmup phase (all
-// streams receive at least one message), then counts messages over a
-// 10-second window.
+// All streams subscribe to EUR/USD. Publisher deduplication means one handler
+// serves all subscribers — this benchmark exercises client-side fan-out throughput.
 //
 // [Params] ConcurrentStreams: 100, 1k, 5k, 10k, 20k
 
@@ -28,6 +27,7 @@ public class ThroughputBenchmark
     private const int MeasurementWindowSec = 10;
 
     private long _totalReceived;
+    private long _establishedStreams;
     private readonly List<IDisposable> _subscriptions = new();
 
     [GlobalSetup]
@@ -41,22 +41,27 @@ public class ThroughputBenchmark
     public void IterationSetup()
     {
         Interlocked.Exchange(ref _totalReceived, 0);
+        Interlocked.Exchange(ref _establishedStreams, 0);
         _subscriptions.Clear();
     }
 
     [Benchmark]
     public async Task<double> MessagesPerSecond()
     {
-        // Open all subscriptions - all on EUR/USD since that is what the
-        // running publisher handles (deduplication means one handler serves all)
         for (var i = 0; i < ConcurrentStreams; i++)
         {
+            var firstMsg = 1; // per-subscription flag — ensures exactly one establish count
             var sub = _harness.Subscriber
                 .Subscribe(
-                    new BenchSpotRequest { CurrencyPair = "EUR/USD" },
+                    new SpotRequest { CurrencyPair = "EUR/USD" },
                     behavior: StreamBehavior.Live)
                 .Subscribe(
-                    onNext: _ => Interlocked.Increment(ref _totalReceived),
+                    onNext: _ =>
+                    {
+                        Interlocked.Increment(ref _totalReceived);
+                        if (Interlocked.Exchange(ref firstMsg, 0) == 1)
+                            Interlocked.Increment(ref _establishedStreams);
+                    },
                     onError: _ => { });
 
             _subscriptions.Add(sub);
@@ -64,13 +69,13 @@ public class ThroughputBenchmark
 
         // Warmup: wait until every subscription has received at least one message
         var warmupDeadline = DateTime.UtcNow.AddSeconds(30);
-        while (Interlocked.Read(ref _totalReceived) < ConcurrentStreams
+        while (Interlocked.Read(ref _establishedStreams) < ConcurrentStreams
                && DateTime.UtcNow < warmupDeadline)
         {
             await Task.Delay(500);
         }
 
-        if (Interlocked.Read(ref _totalReceived) < ConcurrentStreams)
+        if (Interlocked.Read(ref _establishedStreams) < ConcurrentStreams)
             return 0; // warmup timed out - publisher not keeping up
 
         // Measurement window

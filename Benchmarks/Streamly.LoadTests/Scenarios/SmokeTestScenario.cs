@@ -27,21 +27,13 @@ public class SmokeTestScenario
     private const string NatsUrl    = "nats://localhost:4222";
     private const string StreamName = "GetSpotPrice";
 
-    // How long to sustain each load level after all streams have established.
-    private static readonly TimeSpan SustainedDuration = TimeSpan.FromMinutes(3);
-
-    // Maximum wall-clock time allowed for all N streams to receive their first price.
-    private static readonly TimeSpan EstablishTimeout = TimeSpan.FromSeconds(30);
-
-    // A stream is considered "silent" (stalled) if it hasn't received a price in this window.
-    private static readonly TimeSpan SilenceThreshold = TimeSpan.FromSeconds(10);
-
-    // Memory sampling interval.
+    private static readonly TimeSpan SustainedDuration   = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan EstablishTimeout    = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan SilenceThreshold    = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan MemorySampleInterval = TimeSpan.FromSeconds(30);
 
-    // Batch size used when opening streams — mirrors the BurstOpenBenchmark fix.
-    // Opening everything in a single burst at very high N can overwhelm the publisher
-    // request pipeline; batching gives each batch time to confirm before the next fires.
+    // Batching mirrors the BurstOpenBenchmark fix — a single burst at very high N
+    // can overwhelm the publisher request pipeline.
     private const int BatchSize = 500;
     private static readonly TimeSpan BatchDelay = TimeSpan.FromMilliseconds(50);
 
@@ -54,15 +46,15 @@ public class SmokeTestScenario
         Console.WriteLine($"Silence     : alert after {SilenceThreshold.TotalSeconds:F0}s");
         Console.WriteLine();
 
-        using var reporter = new CsvReporter("SmokeTest");
+        using var throughputReporter = new CsvReporter("SmokeTest_Throughput");
+        using var memoryReporter     = new CsvReporter("SmokeTest_Memory");
         var summaryRows = new List<SummaryRow>();
 
         foreach (var n in loadLevels)
         {
-            var row = await RunLevelAsync(n, reporter);
+            var row = await RunLevelAsync(n, throughputReporter, memoryReporter);
             summaryRows.Add(row);
 
-            // Brief pause between levels to let NATS and the publisher drain.
             Console.WriteLine($"\nCooling down 10s before next level...");
             await Task.Delay(TimeSpan.FromSeconds(10));
         }
@@ -72,7 +64,7 @@ public class SmokeTestScenario
 
     // ─── Single load level ──────────────────────────────────────────────────
 
-    private async Task<SummaryRow> RunLevelAsync(int n, CsvReporter reporter)
+    private async Task<SummaryRow> RunLevelAsync(int n, CsvReporter throughputReporter, CsvReporter memoryReporter)
     {
         Console.WriteLine($"\n{'─',60}");
         Console.WriteLine($"Load level: {n:N0} streams");
@@ -84,11 +76,11 @@ public class SmokeTestScenario
         var subscriber = host.Services
             .GetRequiredService<IStreamingSubscriber<SpotRequest, SpotPrice>>();
 
-        // Per-stream state: last price timestamp + total count.
-        var lastSeenTicks  = new ConcurrentDictionary<int, long>();   // index → Stopwatch ticks
-        var priceCounts    = new ConcurrentDictionary<int, long>();   // index → total messages
-        var established    = new ConcurrentDictionary<int, bool>();   // index → first price received
-        var disposables    = new ConcurrentBag<IDisposable>();
+        var lastSeenTicks      = new ConcurrentDictionary<int, long>();
+        var established        = new ConcurrentDictionary<int, bool>();
+        long totalPrices       = 0;
+        var disposables        = new ConcurrentBag<IDisposable>();
+        var currentProcess     = Process.GetCurrentProcess();
 
         var sw = Stopwatch.StartNew();
 
@@ -102,7 +94,7 @@ public class SmokeTestScenario
 
             for (var idx = batchStart; idx < batchEnd; idx++)
             {
-                var i = idx; // capture
+                var i = idx;
                 tasks[i - batchStart] = Task.Run(() =>
                 {
                     var pair = $"EUR/USD_{i}";
@@ -113,15 +105,11 @@ public class SmokeTestScenario
                         .Subscribe(
                             onNext: _ =>
                             {
-                                lastSeenTicks[i]  = Stopwatch.GetTimestamp();
-                                priceCounts.AddOrUpdate(i, 1, (_, c) => c + 1);
+                                lastSeenTicks[i] = Stopwatch.GetTimestamp();
+                                Interlocked.Increment(ref totalPrices);
                                 established.TryAdd(i, true);
                             },
-                            onError: ex =>
-                            {
-                                // Log but don't throw — individual stream errors
-                                // surface in the stale/establish checks below.
-                            });
+                            onError: _ => { });
 
                     disposables.Add(sub);
                 });
@@ -136,8 +124,7 @@ public class SmokeTestScenario
                 Console.WriteLine($"  Opened {batchEnd:N0}/{n:N0} streams ({sw.Elapsed.TotalSeconds:F1}s)");
         }
 
-        var openElapsed = sw.Elapsed;
-        Console.WriteLine($"All subscribe calls issued in {openElapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"All subscribe calls issued in {sw.Elapsed.TotalSeconds:F1}s");
 
         // ── Wait for all streams to establish ───────────────────────────────
         Console.WriteLine($"Waiting up to {EstablishTimeout.TotalSeconds:F0}s for all streams to receive first price...");
@@ -158,8 +145,6 @@ public class SmokeTestScenario
         Console.WriteLine(establishOk
             ? $"  ✓ All {n:N0} streams established in {establishMs:F0}ms"
             : $"  ✗ Only {establishedCount:N0}/{n:N0} streams established within {EstablishTimeout.TotalSeconds:F0}s");
-
-        reporter.RecordLatency(n, establishMs, $"establish_{n}");
 
         // ── Sustained phase ──────────────────────────────────────────────────
         Console.WriteLine($"\nSustained phase: {SustainedDuration.TotalMinutes:F0} min...");
@@ -192,25 +177,22 @@ public class SmokeTestScenario
                                   $"(stall alert #{stallAlerts}) at {sw.Elapsed - sustainedStart:mm\\:ss}");
             }
 
-            // Memory sample
             if (sw.Elapsed >= nextMemorySample)
             {
-                SampleAndReportMemory(reporter, n, sw.Elapsed.TotalSeconds);
+                SampleAndReportMemory(memoryReporter, n, sw.Elapsed.TotalSeconds, currentProcess);
                 nextMemorySample = sw.Elapsed + MemorySampleInterval;
             }
 
-            // Progress tick
             var remaining = (sustainedEnd - sw.Elapsed).TotalSeconds;
             Console.Write($"\r  Sustained {(sw.Elapsed - sustainedStart):mm\\:ss} / " +
                           $"{SustainedDuration:mm\\:ss}  |  " +
-                          $"Prices received: {priceCounts.Values.Sum():N0}  |  " +
+                          $"Prices received: {Interlocked.Read(ref totalPrices):N0}  |  " +
                           $"Stalled: {silentIds.Count}  |  " +
                           $"Remaining: {remaining:F0}s   ");
         }
         Console.WriteLine();
 
-        // Final memory snapshot
-        SampleAndReportMemory(reporter, n, sw.Elapsed.TotalSeconds);
+        SampleAndReportMemory(memoryReporter, n, sw.Elapsed.TotalSeconds, currentProcess);
 
         // ── Teardown ─────────────────────────────────────────────────────────
         Console.WriteLine($"\nDisposing {n:N0} subscriptions...");
@@ -221,19 +203,19 @@ public class SmokeTestScenario
         host.Dispose();
 
         // ── Results ──────────────────────────────────────────────────────────
-        var totalPrices  = priceCounts.Values.Sum();
+        var total        = Interlocked.Read(ref totalPrices);
         var sustainedSec = SustainedDuration.TotalSeconds;
-        var throughput   = totalPrices / sustainedSec;
+        var throughput   = total / sustainedSec;
         var stallOk      = stallAlerts == 0;
 
         Console.WriteLine($"\n  Streams established : {establishedCount:N0}/{n:N0}  {(establishOk ? "✓" : "✗")}");
         Console.WriteLine($"  Establish time      : {establishMs:F0}ms  (limit: {EstablishTimeout.TotalMilliseconds:F0}ms)");
         Console.WriteLine($"  Stall alerts        : {stallAlerts}  (peak stalled: {peakStalledStreams})  {(stallOk ? "✓" : "✗")}");
-        Console.WriteLine($"  Total prices rcvd   : {totalPrices:N0}");
+        Console.WriteLine($"  Total prices rcvd   : {total:N0}");
         Console.WriteLine($"  Avg throughput      : {throughput:F0} msg/s");
         Console.WriteLine($"  Pass                : {(establishOk && stallOk ? "PASS ✓" : "FAIL ✗")}");
 
-        reporter.RecordThroughput(n, throughput, sustainedSec);
+        throughputReporter.RecordThroughput(n, throughput, sustainedSec);
 
         return new SummaryRow(
             N: n,
@@ -241,18 +223,22 @@ public class SmokeTestScenario
             EstablishMs: establishMs,
             StallAlerts: stallAlerts,
             PeakStalledStreams: peakStalledStreams,
-            TotalPricesReceived: totalPrices,
+            TotalPricesReceived: total,
             AvgThroughputPerSec: throughput,
             Pass: establishOk && stallOk);
     }
 
     // ─── Memory sampling ────────────────────────────────────────────────────
 
-    private static void SampleAndReportMemory(CsvReporter reporter, int n, double elapsedSec)
+    private static void SampleAndReportMemory(CsvReporter reporter, int n, double elapsedSec, Process process)
     {
-        GC.Collect(0, GCCollectionMode.Optimized, blocking: false);
-        var managedMb    = GC.GetTotalMemory(forceFullCollection: false) / 1024.0 / 1024.0;
-        var workingSetMb = Process.GetCurrentProcess().WorkingSet64 / 1024.0 / 1024.0;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+
+        var managedMb = GC.GetTotalMemory(forceFullCollection: false) / 1024.0 / 1024.0;
+        process.Refresh();
+        var workingSetMb = process.WorkingSet64 / 1024.0 / 1024.0;
         var kbPerStream  = n > 0 ? managedMb * 1024.0 / n : 0;
 
         Console.WriteLine();
@@ -277,7 +263,6 @@ public class SmokeTestScenario
 
         foreach (var r in rows)
         {
-            var pct    = r.EstablishedCount * 100.0 / r.N;
             var result = r.Pass ? "PASS ✓" : "FAIL ✗";
             Console.WriteLine(
                 $"║ {r.N,6:N0} ║ {r.EstablishedCount,6:N0}/{r.N,-3:N0} ║ {r.EstablishMs,12:F0} ║ {r.StallAlerts,8} ║ {r.AvgThroughputPerSec,8:F0} ║ {result,-12} ║");
@@ -306,30 +291,23 @@ public class SmokeTestScenario
 
     private static IHost BuildSubscriberHost()
     {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Streamly:NatsUrl"]     = NatsUrl,
-                ["Streamly:ServiceName"] = $"SmokeTest-{Guid.NewGuid():N}"[..20],
-                // Give the subscriber a generous heartbeat timeout during long runs.
-                ["Streamly:SubscriberHeartbeatTimeoutMs"] = "10000",
-            })
-            .Build();
-
-        return Host.CreateDefaultBuilder()
-            .ConfigureLogging(log => log
-                .ClearProviders()
-                .AddConsole()
-                .AddFilter("Streamly", LogLevel.Warning)
-                .AddFilter("Microsoft.Hosting", LogLevel.Warning))
-            .ConfigureServices((_, services) =>
-            {
-                services.AddStreamly(config, options =>
-                {
-                    options.AddSubscriber<SpotRequest, SpotPrice>(StreamName);
-                });
-            })
-            .Build();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Streamly:NatsUrl"]     = NatsUrl,
+            ["Streamly:ServiceName"] = $"SmokeTest-{Guid.NewGuid():N}"[..20],
+            ["Streamly:SubscriberHeartbeatTimeoutMs"] = "10000",
+        });
+        builder.Logging
+            .ClearProviders()
+            .AddConsole()
+            .AddFilter("Streamly", LogLevel.Warning)
+            .AddFilter("Microsoft.Hosting", LogLevel.Warning);
+        builder.Services.AddStreamly(builder.Configuration, options =>
+        {
+            options.AddSubscriber<SpotRequest, SpotPrice>(StreamName);
+        });
+        return builder.Build();
     }
 
     // ─── Value types ─────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ public class StreamlyBenchmarkConfig : ManualConfig
     {
         AddJob(Job.Default
             .WithWarmupCount(1)
-            .WithIterationCount(1)
+            .WithIterationCount(5)
             .WithInvocationCount(1)
             .WithUnrollFactor(1)
             .WithId("Streamly"));
@@ -55,7 +55,6 @@ public class StreamlyBenchmarkConfig : ManualConfig
         // MinIterationTime warning is designed for CPU micro-benchmarks.
         // Integration benchmarks with NATS round-trips are inherently slower
         // and the warning is not actionable here.
-        WithOption(ConfigOptions.DisableOptimizationsValidator, true);
         AddValidator(JitOptimizationsValidator.DontFailOnError);
     }
 }

@@ -51,14 +51,14 @@ public class IrsBurstOpenBenchmark
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
-        DrainAndDispose(ref _subscriptions);
+        BenchmarkHelpers.DrainAndDispose(ref _subscriptions);
         await _harness.DisposeAsync();
     }
 
     [IterationCleanup]
     public void IterationCleanup()
     {
-        DrainAndDispose(ref _subscriptions);
+        BenchmarkHelpers.DrainAndDispose(ref _subscriptions);
         // Give the publisher time to drain its registry before the next
         // iteration floods it with the same N RequestIds again.
         Thread.Sleep(5000);
@@ -110,12 +110,5 @@ public class IrsBurstOpenBenchmark
                 $"Only {N - remaining}/{N} IRS streams received first price within 5 min.")));
 
         return await tcs.Task;
-    }
-
-    private static void DrainAndDispose(ref ConcurrentBag<IDisposable> bag)
-    {
-        var snapshot = Interlocked.Exchange(ref bag, new ConcurrentBag<IDisposable>());
-        while (snapshot.TryTake(out var sub))
-            sub.Dispose();
     }
 }

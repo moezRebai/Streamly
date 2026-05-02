@@ -4,8 +4,9 @@ using System.Globalization;
 namespace Streamly.LoadTests;
 
 /// <summary>
-/// Écrit les résultats de test dans un fichier CSV horodaté.
-/// Format compatible Excel / pandas pour analyse post-test.
+/// Writes test results to a timestamped CSV file.
+/// Excel / pandas compatible format for post-test analysis.
+/// Each instance is single-purpose: all Record* calls must use the same record type.
 /// </summary>
 public class CsvReporter : IDisposable
 {
@@ -13,6 +14,7 @@ public class CsvReporter : IDisposable
     private readonly StreamWriter _writer;
     private readonly Stopwatch _elapsed = Stopwatch.StartNew();
     private bool _headerWritten;
+    private string? _currentHeader;
 
     public CsvReporter(string scenarioName)
     {
@@ -28,7 +30,7 @@ public class CsvReporter : IDisposable
     }
 
     /// <summary>
-    /// Enregistre une mesure de latence end-to-end.
+    /// Records an end-to-end latency measurement.
     /// </summary>
     public void RecordLatency(
         int streamCount,
@@ -45,7 +47,7 @@ public class CsvReporter : IDisposable
     }
 
     /// <summary>
-    /// Enregistre une mesure de throughput.
+    /// Records a throughput measurement.
     /// </summary>
     public void RecordThroughput(
         int streamCount,
@@ -62,7 +64,7 @@ public class CsvReporter : IDisposable
     }
 
     /// <summary>
-    /// Enregistre un événement de failover.
+    /// Records a failover event.
     /// </summary>
     public void RecordFailover(
         string eventType,        // "LeaderKilled" | "NewLeaderElected" | "FirstMessageReceived"
@@ -79,7 +81,7 @@ public class CsvReporter : IDisposable
     }
 
     /// <summary>
-    /// Enregistre un snapshot mémoire.
+    /// Records a memory snapshot.
     /// </summary>
     public void RecordMemory(
         int streamCount,
@@ -120,7 +122,15 @@ public class CsvReporter : IDisposable
 
     private void EnsureHeader(string header)
     {
-        if (_headerWritten) return;
+        if (_headerWritten)
+        {
+            if (_currentHeader != header)
+                throw new InvalidOperationException(
+                    $"CsvReporter already has header '{_currentHeader}' — cannot write '{header}'. " +
+                    "Use separate CsvReporter instances for different record types.");
+            return;
+        }
+        _currentHeader = header;
         _writer.WriteLine(header);
         _headerWritten = true;
     }

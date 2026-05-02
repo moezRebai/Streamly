@@ -20,7 +20,9 @@ public static class IrsRequestFactory
     public static IReadOnlyList<IrsRequest> Generate(int count)
     {
         var requests = new List<IrsRequest>(count);
-        var today    = DateOnly.FromDateTime(DateTime.UtcNow);
+        // Fixed base date so request IDs are identical across different run days,
+        // keeping SHA256 registry paths warm on repeated benchmark sessions.
+        var today    = new DateOnly(2024, 1, 1);
 
         for (var i = 0; i < count; i++)
         {

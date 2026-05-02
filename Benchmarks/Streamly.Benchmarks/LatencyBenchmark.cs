@@ -4,6 +4,10 @@
 // to the first onNext callback arriving from the publisher.
 //
 // NFR target: P99 < 50ms
+//
+// BackgroundStreams all subscribe to the same EUR/USD pair. Publisher
+// deduplication means one handler serves all of them — the background load
+// exercises the client-side fan-out path, not additional publisher handlers.
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -21,8 +25,6 @@ public class LatencyBenchmark
     [Params(0, 100, 1_000, 5_000)]
     public int BackgroundStreams;
 
-    // ConcurrentBag is thread-safe for Add (IterationSetup)
-    // and TryTake (cleanup) without any explicit locking
     private ConcurrentBag<IDisposable> _backgroundSubscriptions = new();
 
     [GlobalSetup]
@@ -39,7 +41,7 @@ public class LatencyBenchmark
         {
             var sub = _harness.Subscriber
                 .Subscribe(
-                    new BenchSpotRequest { CurrencyPair = "EUR/USD" },
+                    new SpotRequest { CurrencyPair = "EUR/USD" },
                     behavior: StreamBehavior.Live)
                 .Subscribe(_ => { });
 
@@ -61,7 +63,7 @@ public class LatencyBenchmark
 
         subscription = _harness.Subscriber
             .Subscribe(
-                new BenchSpotRequest { CurrencyPair = "EUR/USD" },
+                new SpotRequest { CurrencyPair = "EUR/USD" },
                 behavior: StreamBehavior.Live)
             .Subscribe(
                 onNext: _ => tcs.TrySetResult(sw.Elapsed.TotalMilliseconds),
@@ -86,26 +88,14 @@ public class LatencyBenchmark
     [IterationCleanup]
     public void IterationCleanup()
     {
-        DrainAndDispose(ref _backgroundSubscriptions);
+        BenchmarkHelpers.DrainAndDispose(ref _backgroundSubscriptions);
         Thread.Sleep(500);
     }
 
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
-        // Drain anything IterationCleanup may have left (e.g. on crash path)
-        DrainAndDispose(ref _backgroundSubscriptions);
+        BenchmarkHelpers.DrainAndDispose(ref _backgroundSubscriptions);
         await _harness.DisposeAsync();
-    }
-
-    // Drains a ConcurrentBag by replacing it atomically with a fresh empty
-    // instance, then disposing all items from the drained snapshot.
-    // Replacing rather than draining in-place avoids a race where IterationSetup
-    // adds to the bag while cleanup is still draining it.
-    private static void DrainAndDispose(ref ConcurrentBag<IDisposable> bag)
-    {
-        var snapshot = Interlocked.Exchange(ref bag, new ConcurrentBag<IDisposable>());
-        while (snapshot.TryTake(out var sub))
-            sub.Dispose();
     }
 }
