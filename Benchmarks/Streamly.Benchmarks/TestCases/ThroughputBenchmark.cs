@@ -13,7 +13,7 @@ using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using Streamly.Core.Models;
 
-namespace Streamly.Benchmarks;
+namespace Streamly.Benchmarks.TestCases;
 
 [Config(typeof(StreamlyBenchmarkConfig))]
 [MemoryDiagnoser]
@@ -51,7 +51,7 @@ public class ThroughputBenchmark
         for (var i = 0; i < ConcurrentStreams; i++)
         {
             var firstMsg = 1; // per-subscription flag — ensures exactly one establish count
-            var sub = _harness.Subscriber
+            var sub = _harness.SpotSubscriber
                 .Subscribe(
                     new SpotRequest { CurrencyPair = "EUR/USD" },
                     behavior: StreamBehavior.Live)

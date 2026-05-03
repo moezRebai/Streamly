@@ -38,12 +38,12 @@ try
         {
             services.AddRouting();
 
-            services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
+            //services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
 
             services.AddStreamly(context.Configuration, options =>
             {
                 options.AddHandler<SpotRequest, SpotPrice, SpotPricingHandler>("GetSpotPrice");
-                options.AddHandler<IrsRequest, IrsResponse, SwapPricingHandler>("GetIrsPrice");
+                options.AddHandler<IrsRequest, IrsResponse, SwapPricingHandler>("GetSwapRatePrice");
             });
 
             services.Configure<SpotPricingFilterOptions>(

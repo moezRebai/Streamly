@@ -49,7 +49,7 @@ public class SpotPricingHandler(ILogger<SpotPricingHandler> logger)
         var random = new Random();
 
         // Jitter the first tick to spread 2000 streams across the first second
-        await Task.Delay(random.Next(0, 1000), cancellationToken);
+        //await Task.Delay(random.Next(0, 1000), cancellationToken);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -58,7 +58,7 @@ public class SpotPricingHandler(ILogger<SpotPricingHandler> logger)
             var price = BuildPrice(request.CurrencyPair, basePrice, random);
             await context.PublishAsync(price, cancellationToken);
 
-            await Task.Delay(300 + random.Next(0, 20), cancellationToken);
+            await Task.Delay(1 + random.Next(0, 20), cancellationToken);
         }
     }
 

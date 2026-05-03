@@ -6,10 +6,10 @@
 //   2. Streamly.Test.Publisher  (SpotPricer + IrsPricer handlers registered)
 //   3. dotnet run -c Release    (this benchmark)
 
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Streamly;
 using Streamly.Client;
 
 namespace Streamly.Benchmarks;
@@ -18,11 +18,11 @@ public sealed class BenchmarkHarness : IAsyncDisposable
 {
     public const string NatsUrl = "nats://localhost:4222";
     public const string SpotStreamName = "GetSpotPrice";
-    public const string IrsStreamName = "GetSwapPrice";
+    public const string IrsStreamName = "GetSwapRatePrice";
 
     private IHost? _subscriberHost;
 
-    public IStreamingSubscriber<SpotRequest, SpotPrice> Subscriber { get; private set; } = null!;
+    public IStreamingSubscriber<SpotRequest, SpotPrice> SpotSubscriber { get; private set; } = null!;
     public IStreamingSubscriber<IrsRequest, IrsResponse> IrsSubscriber { get; private set; } = null!;
 
     public async Task StartAsync()
@@ -46,7 +46,7 @@ public sealed class BenchmarkHarness : IAsyncDisposable
         _subscriberHost = builder.Build();
         await _subscriberHost.StartAsync();
 
-        Subscriber = _subscriberHost.Services
+        SpotSubscriber = _subscriberHost.Services
             .GetRequiredService<IStreamingSubscriber<SpotRequest, SpotPrice>>();
 
         IrsSubscriber = _subscriberHost.Services

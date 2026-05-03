@@ -202,7 +202,7 @@ public class SpotPricingHandler : IStreamingRequestHandler<SpotRequest, SpotPric
 builder.Services.AddStreamlyServer(builder.Configuration, options =>
 {
     options.AddHandler<SpotRequest, SpotPrice, SpotPricingHandler>("GetSpotPrice");
-    options.AddHandler<IrsRequest, IrsResponse, SwapPricingHandler>("GetIrsPrice");
+    options.AddHandler<IrsRequest, IrsResponse, SwapPricingHandler>("GetSwapRatePrice");
 
     // With a custom diff computer
     options.AddHandler<MyRequest, MyResponse, MyHandler, MyDiffComputer>("GetMyStream");
@@ -359,7 +359,7 @@ public class SpotSubscriberWorker(
 builder.Services.AddStreamlyClient(builder.Configuration, options =>
 {
     options.AddSubscriber<SpotRequest, SpotPrice>("GetSpotPrice");
-    options.AddSubscriber<IrsRequest, IrsResponse>("GetIrsPrice");
+    options.AddSubscriber<IrsRequest, IrsResponse>("GetSwapRatePrice");
 });
 ```
 
@@ -774,7 +774,7 @@ The `examples/` folder contains two runnable projects that demonstrate a complet
 
 Simulates two live pricing streams:
 - **GetSpotPrice** — FX spot prices (EUR/USD, GBP/USD, etc.) updated every 300 ms
-- **GetIrsPrice** — Interest rate swap prices updated every 500 ms
+- **GetSwapRatePrice** — Interest rate swap prices updated every 500 ms
 
 Includes Monitoring and Audit registration. Run two instances simultaneously to observe leader election and failover.
 

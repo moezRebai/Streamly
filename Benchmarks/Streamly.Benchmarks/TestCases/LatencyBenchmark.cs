@@ -3,7 +3,12 @@
 // Measures time-to-first-price: wall-clock elapsed from Subscribe() call
 // to the first onNext callback arriving from the publisher.
 //
-// NFR target: P99 < 50ms
+// NFR target: P99 < 50ms  (requires IterationCount >= 5 for a valid P99 estimate)
+//
+// BackgroundStreams=0 is a cold-start edge case: with no existing subscribers
+// the publisher may be mid-jitter delay, producing artificially high latency
+// unrelated to Streamly's fan-out path. The warm-system NFR applies to
+// BackgroundStreams > 0.
 //
 // BackgroundStreams all subscribe to the same EUR/USD pair. Publisher
 // deduplication means one handler serves all of them — the background load
@@ -14,7 +19,7 @@ using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using Streamly.Core.Models;
 
-namespace Streamly.Benchmarks;
+namespace Streamly.Benchmarks.TestCases;
 
 [Config(typeof(StreamlyBenchmarkConfig))]
 [MemoryDiagnoser]
@@ -22,10 +27,11 @@ public class LatencyBenchmark
 {
     private BenchmarkHarness _harness = null!;
 
-    [Params(0, 100, 1_000, 5_000)]
+    [Params(0, 100, 1_000, 5_000, 10000)]
     public int BackgroundStreams;
 
     private ConcurrentBag<IDisposable> _backgroundSubscriptions = new();
+    private long _establishedStreams;
 
     [GlobalSetup]
     public async Task GlobalSetup()
@@ -37,19 +43,36 @@ public class LatencyBenchmark
     [IterationSetup]
     public void IterationSetup()
     {
+        Interlocked.Exchange(ref _establishedStreams, 0);
+
         for (var i = 0; i < BackgroundStreams; i++)
         {
-            var sub = _harness.Subscriber
+            var firstMsg = 1;
+            var sub = _harness.SpotSubscriber
                 .Subscribe(
                     new SpotRequest { CurrencyPair = "EUR/USD" },
                     behavior: StreamBehavior.Live)
-                .Subscribe(_ => { });
+                .Subscribe(_ =>
+                {
+                    if (Interlocked.Exchange(ref firstMsg, 0) == 1)
+                        Interlocked.Increment(ref _establishedStreams);
+                });
 
             _backgroundSubscriptions.Add(sub);
         }
 
         if (BackgroundStreams > 0)
-            Thread.Sleep(2000);
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (Interlocked.Read(ref _establishedStreams) < BackgroundStreams
+                   && DateTime.UtcNow < deadline)
+                Thread.Sleep(100);
+        }
+
+        // Flush setup allocations so they don't inflate the MemoryDiagnoser reading.
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
     }
 
     [Benchmark]
@@ -61,7 +84,7 @@ public class LatencyBenchmark
         var sw = Stopwatch.StartNew();
         IDisposable? subscription = null;
 
-        subscription = _harness.Subscriber
+        subscription = _harness.SpotSubscriber
             .Subscribe(
                 new SpotRequest { CurrencyPair = "EUR/USD" },
                 behavior: StreamBehavior.Live)

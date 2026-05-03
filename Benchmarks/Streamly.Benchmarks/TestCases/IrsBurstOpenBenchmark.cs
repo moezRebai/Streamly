@@ -21,7 +21,7 @@ using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using Streamly.Core.Models;
 
-namespace Streamly.Benchmarks;
+namespace Streamly.Benchmarks.TestCases;
 
 [Config(typeof(StreamlyBenchmarkConfig))]
 [MemoryDiagnoser]

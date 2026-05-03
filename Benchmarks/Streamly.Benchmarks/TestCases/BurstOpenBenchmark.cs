@@ -18,7 +18,7 @@ using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using Streamly.Core.Models;
 
-namespace Streamly.Benchmarks;
+namespace Streamly.Benchmarks.TestCases;
 
 [Config(typeof(StreamlyBenchmarkConfig))]
 [MemoryDiagnoser]
@@ -26,7 +26,7 @@ public class BurstOpenBenchmark
 {
     private BenchmarkHarness _harness = null!;
 
-    [Params(1000, 5000)]
+    [Params(100, 1000, 5000)]
     public int N;
 
     private ConcurrentBag<IDisposable> _subscriptions = new();
@@ -75,7 +75,7 @@ public class BurstOpenBenchmark
             var pair = $"EUR/USD_{i}";
             tasks[i] = Task.Run(() =>
             {
-                var sub = _harness.Subscriber
+                var sub = _harness.SpotSubscriber
                     .Subscribe(
                         new SpotRequest { CurrencyPair = pair },
                         behavior: StreamBehavior.Live)

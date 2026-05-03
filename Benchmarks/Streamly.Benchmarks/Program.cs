@@ -2,6 +2,7 @@
 
 using BenchmarkDotNet.Running;
 using Streamly.Benchmarks;
+using Streamly.Benchmarks.TestCases;
 
 #if DEBUG
 Console.ForegroundColor = ConsoleColor.Yellow;

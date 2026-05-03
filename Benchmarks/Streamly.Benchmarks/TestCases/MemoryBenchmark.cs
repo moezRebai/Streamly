@@ -9,7 +9,7 @@
 using BenchmarkDotNet.Attributes;
 using Streamly.Core.Models;
 
-namespace Streamly.Benchmarks;
+namespace Streamly.Benchmarks.TestCases;
 
 [Config(typeof(StreamlyBenchmarkConfig))]
 [MemoryDiagnoser]
@@ -41,7 +41,7 @@ public class MemoryBenchmark
         for (var i = 0; i < StreamCount; i++)
         {
             var firstMsg = 1;
-            var sub = _harness.Subscriber
+            var sub = _harness.SpotSubscriber
                 .Subscribe(
                     new SpotRequest { CurrencyPair = "EUR/USD" },
                     behavior: StreamBehavior.Live)

@@ -33,12 +33,12 @@ var host = Host.CreateDefaultBuilder(args)
     {
         services.AddRouting();
 
-        services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
+        //services.AddSingleton<IMessageSerializer, MessagePackMessageSerializer>();
 
         services.AddStreamly(context.Configuration, options =>
         {
             options.AddSubscriber<SpotRequest, SpotPrice>("GetSpotPrice");
-            options.AddSubscriber<IrsRequest, IrsResponse>("GetIrsPrice");
+            options.AddSubscriber<IrsRequest, IrsResponse>("GetSwapRatePrice");
         });
 
         services.AddStreamlyMonitoring(options =>
